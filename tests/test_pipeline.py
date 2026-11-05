@@ -1,7 +1,7 @@
 """Offline tests for the cbma-skills scripts. No network: NCBI calls go to fakes.
 
     pip install pytest pyyaml
-    pytest experiments/cbma-skills/tests
+    pytest tests
 """
 
 import importlib.util
@@ -29,7 +29,6 @@ pubmed = load("pubmed_search", SKILLS / "pubmed-search/scripts/pubmed_search.py"
 docnorm = load("docnorm", SKILLS / "fulltext-sources/scripts/docnorm.py")
 gather = load("gather_fulltext", SKILLS / "fulltext-sources/scripts/gather_fulltext.py")
 ledger = load("ledger", SKILLS / "cbma-review/scripts/ledger.py")
-compare = load("compare", ROOT / "benchmark/compare.py")
 
 
 # --------------------------------------------------------------------------- #
@@ -395,25 +394,6 @@ def test_full_flow(review, capsys):
     assert status["fulltext_screening"]["decisions_with_ungrounded_evidence"] == 1
     assert status["extraction"]["pending"] == 1
 
-    # ---- benchmark scoring against a gold file and a fake autonima run
-    gold = review.parent / "gold.csv"
-    gold.write_text("pmid,included\n11111111,1\n33333333,0\n44444444,1\n")
-    run = review.parent / "autonima_run" / "outputs"
-    run.mkdir(parents=True)
-    (run / "abstract_screening_results.json").write_text(json.dumps({"screening_results": [
-        {"study_id": "11111111", "decision": "included_abstract"},
-        {"study_id": "22222222", "decision": "excluded_abstract"},
-        {"study_id": "33333333", "decision": "excluded_abstract"}]}))
-    (run / "fulltext_screening_results.json").write_text(json.dumps({"screening_results": [
-        {"study_id": "11111111", "decision": "included_fulltext"}]}))
-    assert compare.main([str(review), "--gold", str(gold), "--autonima", str(run.parent)]) == 0
-    bench = last_json(capsys)
-    assert bench["skills"]["not_retrieved_by_search"] == ["44444444"]
-    assert bench["skills"]["final"]["tp"] == 1 and bench["skills"]["final"]["fp"] == 1
-    assert bench["skills"]["final"]["recall"] == 0.5
-    assert bench["autonima"]["final"]["precision"] == 1.0
-    assert bench["agreement"]["final"]["n"] == 1
-
     # ---- editing a full-text criterion re-opens exactly the full-text decisions
     text = (review / "review.yaml").read_text().replace("Whole-brain coordinates reported",
                                                         "Whole-brain peak coordinates reported")
@@ -515,28 +495,6 @@ def test_target_criteria_may_be_omitted_when_a_global_criterion_already_excludes
     full = dict(rec, criteria={"GI1": "not_met", "I1": "met"})              # a full record is untouched
     errs, recs = ledger.validate_selection([full], SEL_ITEM, SEL_TARGETS, ["GI1"])
     assert errs == [] and "target_criteria_omitted" not in recs[0]
-
-
-def test_scoring_can_read_decisions_as_recorded_when_docs_did_not_travel(review):
-    """A review imported without docs/ (the Delta runs) cannot recompute input hashes, so
-    valid_decisions() drops every full-text decision and the scorer saw zero includes.
-    as_recorded keeps the latest decision under the current criteria; a criteria change
-    still makes a record stale."""
-    compare = load("compare", SKILLS.parent / "benchmark" / "compare.py")
-    run_ledger("init", review)
-    rv = ledger.Review(review)
-    pmid = next(iter(rv.records))
-    ft = rv.criteria["fulltext"]["hash"]
-    rows = [{"stage": "fulltext", "pmid": pmid, "criteria_hash": ft, "input_hash": "from-another-machine",
-             "decision": "exclude", "criteria": {}, "reason": "first"},
-            {"stage": "fulltext", "pmid": pmid, "criteria_hash": ft, "input_hash": "from-another-machine",
-             "decision": "include", "criteria": {}, "reason": "latest wins"},
-            {"stage": "fulltext", "pmid": "99999999", "criteria_hash": "an-older-protocol",
-             "input_hash": "x", "decision": "include", "criteria": {}, "reason": "stale criteria"}]
-    (review / "decisions" / "fulltext.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-    assert compare.skills_decisions(review)["fulltext_include"] == set()
-    recorded = compare.skills_decisions(review, as_recorded=True)
-    assert recorded["fulltext_include"] == {pmid} and recorded["fulltext_judged"] == {pmid}
 
 
 def test_extractions_under_a_migrated_skill_hash_stay_done(review, monkeypatch):

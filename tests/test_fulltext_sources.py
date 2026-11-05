@@ -1,6 +1,6 @@
 """Full-text normalization on the shapes found in the local corpora (ACE HTML, Elsevier XML).
 
-    pytest experiments/cbma-skills/tests
+    pytest tests
 The Elsevier tests need elsevier_coordinate_extraction and are skipped without it.
 """
 
