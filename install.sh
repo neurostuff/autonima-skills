@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Link the cbma-skills skill folders into a workspace for Claude Code and Codex.
+# Link the autonima-skills skill folders into a workspace for Claude Code and Codex.
 #   ./install.sh [WORKSPACE]      (default: current directory)
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,3 +18,7 @@ done
 mkdir -p "$ws/.claude/agents"
 cp "$here"/agents/*.md "$ws/.claude/agents/"
 echo "copied $(ls "$here"/agents/*.md | wc -l) agent definitions into $ws/.claude/agents"
+# Record what was installed. `ledger.py status` compares against it and reports any later
+# edit to the skills, scripts or judge settings.
+python3 "$here/skills/cbma-review/scripts/ledger.py" lock "$ws" >/dev/null
+echo "recorded the installed files in $ws/.cbma-skills.lock"

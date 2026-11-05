@@ -8,6 +8,7 @@ the only thing that writes decisions. Standard library plus PyYAML.
     python ledger.py status   REVIEW_DIR [--json]          # PRISMA-style counts, writes results/prisma.json
     python ledger.py export   REVIEW_DIR                   # NiMADS studyset + annotation for NiMARE
     python ledger.py import-analyses REVIEW_DIR            # records mode: analyses from pre-extracted records
+    python ledger.py lock     WORKSPACE                    # record the installed skills (install.sh runs it)
 
 Stages, in order: abstract, fulltext, extraction, selection.
 
@@ -1142,6 +1143,77 @@ def cmd_import_analyses(rv: Review, agent: str) -> dict:
 # Status
 # --------------------------------------------------------------------------- #
 
+# --------------------------------------------------------------------------- #
+# Package lock: the skill and judge files a workspace was installed with
+# --------------------------------------------------------------------------- #
+
+LOCK_NAME = ".cbma-skills.lock"
+
+
+def _tree_hashes(root: Path, prefix: str, names: str = "*") -> Dict[str, str]:
+    out = {}
+    if root.is_dir():
+        for path in sorted(root.rglob(names)):
+            if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
+                out[f"{prefix}/{path.relative_to(root).as_posix()}"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return out
+
+
+def installed_files(workspace: Path) -> Dict[str, str]:
+    """What a review in this workspace runs on: the package's skills, which install.sh links, so
+    an edit to the package is live; and the judge definitions and judge settings in the
+    workspace's .claude/agents, or the package's agents/ when the workspace has none."""
+    agents = workspace / ".claude" / "agents"
+    if not agents.is_dir():
+        agents = SKILLS_ROOT.parent / "agents"
+    return {**_tree_hashes(SKILLS_ROOT, "skills"), **_tree_hashes(agents, "agents", "cbma-*.md"),
+            **_tree_hashes(agents, "agents", "judge_*.json")}
+
+
+def _files_sha(files: Dict[str, str]) -> str:
+    return hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+
+
+def cmd_lock(workspace: Path) -> dict:
+    """Record the installed files, so that status can show any later edit to them."""
+    import subprocess
+    files = installed_files(workspace)
+    lock = {"package": str(SKILLS_ROOT.parent), "locked_at": now(), "sha256": _files_sha(files), "git": None,
+            "files": files}
+    def git(*args):
+        return subprocess.run(["git", "-C", str(SKILLS_ROOT.parent), *args], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    try:
+        lock["git"] = {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain", "--", "."))}
+    except (OSError, subprocess.CalledProcessError):
+        pass                                            # not a git checkout: the file hashes still hold
+    write_json(workspace / LOCK_NAME, lock)
+    return {k: v for k, v in lock.items() if k != "files"} | {"files": len(files)}
+
+
+def package_drift(workspace: Path) -> dict:
+    """Compare the installed files with the workspace's lock. Stage skills are already part of
+    every decision's criteria hash; this also covers the scripts, the orchestrator and the judge
+    settings, which are not."""
+    path = workspace / LOCK_NAME
+    if not path.exists():
+        return {"lock": "none", "hint": f"run install.sh, or `ledger.py lock {workspace}`"}
+    lock = json.loads(path.read_text())
+    old, new = lock.get("files", {}), installed_files(workspace)
+    report = {"lock": "ok", "sha256": lock.get("sha256", "")[:16], "locked_at": lock.get("locked_at"),
+              **({"git_commit": lock["git"]["commit"][:12]} if lock.get("git") else {})}
+    if lock.get("package") != str(SKILLS_ROOT.parent):
+        # Informational: a moved or re-cloned package with the same files is the same package.
+        report["package_moved"] = {"locked": lock.get("package"), "running": str(SKILLS_ROOT.parent)}
+    changed = sorted(k for k in old.keys() & new.keys() if old[k] != new[k])
+    added, removed = sorted(new.keys() - old.keys()), sorted(old.keys() - new.keys())
+    if changed or added or removed:
+        report.update(lock="drift", changed=changed, added=added, removed=removed,
+                      hint="the installed skills or judge settings differ from the workspace lock. "
+                           "Show the user; re-lock only if they confirm the change was intended")
+    return report
+
+
 def cmd_status(rv: Review) -> dict:
     log_path = rv.root / "search" / "search_log.json"
     search_log = json.loads(log_path.read_text()) if log_path.exists() else {}
@@ -1211,6 +1283,7 @@ def cmd_status(rv: Review) -> dict:
         "extraction": ext,
         "selection": {"pending_studies": len(rv.pending("selection")), "targets": targets},
         "criteria_hashes": {s: rv.criteria[s]["hash"] for s in STAGES},
+        "package": package_drift(rv.root.parent),
         "generated_at": now(),
     }
     write_json(rv.root / "results" / "prisma.json", status)
@@ -1319,8 +1392,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     p.add_argument("--stage", choices=STAGES, required=True)
     p.add_argument("--agent", default=os.environ.get("CBMA_AGENT", "unknown"),
                    help="harness/model that produced the output, e.g. claude-code/<model id>")
+    p = sub.add_parser("lock", help="record the installed skills and judge settings (install.sh runs this)")
+    p.add_argument("workspace", type=Path)
     args = ap.parse_args(list(argv) if argv is not None else None)
 
+    if args.cmd == "lock":
+        print(json.dumps(cmd_lock(args.workspace.resolve()), indent=1))
+        return 0
     try:
         rv = Review(args.review_dir)
         if args.cmd == "init":
@@ -1357,6 +1435,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         elif args.cmd == "status":
             status = cmd_status(rv)
             print(json.dumps(status, indent=1))
+            if status["package"]["lock"] == "drift":
+                print("WARNING: installed skills or judge settings differ from the workspace lock: "
+                      f"{status['package']}", file=sys.stderr)
     except LedgerError as exc:
         print(f"LEDGER ERROR: {exc}", file=sys.stderr)
         return 1
