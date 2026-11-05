@@ -6,7 +6,6 @@ output format. No direct API credentials or additional Python dependencies requi
 from __future__ import annotations
 
 import copy
-import fcntl
 import hashlib
 import json
 import math
@@ -14,7 +13,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import sys
 import time
 import signal
 import collections
@@ -623,30 +621,21 @@ def cli_warning_event(event):
     return item.get('type') == 'error' and any(w.fullmatch(item.get('message', '')) for w in CLI_WARNINGS)
 
 
-def run_process(cmd, prompt, directory, env, timeout=None):
-    """Stream CLI output to durable files, so timeouts/crashes retain received usage."""
-    output = Path(directory) / ('events.jsonl' if env.get('CBMA_CODEX_BATCH_JUDGE') == '1' else 'cli_result.json')
-    with output.open('w') as stdout, (Path(directory) / 'stderr.txt').open('w') as stderr:
-        # Claude owns a process group for timeout cleanup. Codex inherits its outer
-        # stage-runner group so that killing the launcher also kills the model CLI.
-        own_group = env.get('CBMA_CODEX_BATCH_JUDGE') != '1'
+def run_process(cmd, prompt, directory, env, timeout=None, output='cli_result.json'):
+    """Stream CLI output to durable files, so timeouts/crashes retain received usage.
+    The CLI gets its own process group, so a timeout also stops anything it started."""
+    with (Path(directory) / output).open('w') as stdout, (Path(directory) / 'stderr.txt').open('w') as stderr:
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=stdout, stderr=stderr,
-                                text=True, env=env, start_new_session=own_group)
+                                text=True, env=env, start_new_session=True)
         try:
             proc.communicate(input=prompt, timeout=timeout)
         except BaseException:
             if proc.poll() is None:
-                if own_group:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                else:
-                    proc.terminate()
+                os.killpg(proc.pid, signal.SIGTERM)
             try:
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
-                if own_group:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                else:
-                    proc.kill()
+                os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
             raise
     return proc.returncode
@@ -726,29 +715,31 @@ def claude(prepared, command, model, effort, timeout, budget=None, directory=Non
                        cost_usd=logged.get('total_cost_usd'), model_usage=logged.get('modelUsage'))
 
 
-def codex(prepared, command, workspace):
-    supplied = os.environ.get('CBMA_JUDGE_ATTEMPT_DIR')
-    directory = attempt(prepared, 'codex', command[2], command[3], supplied)
+def codex(prepared, command, model, effort, timeout, directory=None):
+    """One tool-free `codex exec` turn. `command` is the CLI (`codex`, or a wrapper that
+    forwards its arguments to it, e.g. to route through a gateway)."""
+    directory = attempt(prepared, 'codex', model, effort, directory)
     schema_path, final = directory / 'schema.json', directory / 'response.json'
     schema_path.write_text(json.dumps(prepared['schema']))
-    cmd = list(command) + ['-C', str(workspace), '--skip-git-repo-check', '--color', 'never', '--json',
-        '--ignore-user-config', '--sandbox', 'read-only', '--output-schema', str(schema_path),
-        '--output-last-message', str(final), '-c', 'project_doc_max_bytes=0',
-        '-c', 'developer_instructions=' + json.dumps(ROLE), '-c', 'approval_policy="never"',
-        '-c', 'features.shell_tool=false', '-c', 'features.multi_agent=false',
-        '-c', 'features.multi_agent_v2=false', '-c', 'features.apps=false',
-        '-c', 'web_search="disabled"', '-']
+    cmd = list(command) + ['exec', '-m', model, '-C', str(directory), '--skip-git-repo-check',
+        '--color', 'never', '--json', '--ignore-user-config', '--sandbox', 'read-only',
+        '--output-schema', str(schema_path), '--output-last-message', str(final),
+        '-c', 'project_doc_max_bytes=0', '-c', 'developer_instructions=' + json.dumps(ROLE),
+        '-c', 'approval_policy="never"', '-c', 'features.shell_tool=false',
+        '-c', 'features.multi_agent=false', '-c', 'features.multi_agent_v2=false',
+        '-c', 'features.apps=false', '-c', 'web_search="disabled"']
+    if effort != 'default':
+        cmd += ['-c', f'model_reasoning_effort="{effort}"']
+    cmd.append('-')
     status, error, recovery = 'failed', None, None
     try:
         if not prepared['ready']:
             raise ValueError('no readable items; see input_manifest.json')
         code = run_process(cmd, prepared['system'] + '\n\n' + prepared['prompt'], directory,
-                           dict(os.environ, CBMA_CODEX_BATCH_JUDGE='1'))
+                           dict(os.environ, CBMA_BATCH_JUDGE='1'), timeout, output='events.jsonl')
         raw = (directory / 'events.jsonl').read_text()
-        sys.stdout.write(raw)
-        sys.stderr.write((directory / 'stderr.txt').read_text())
         if code:
-            return code
+            raise ValueError(((directory / 'stderr.txt').read_text() or raw or 'CLI failure')[-500:])
         events = [json.loads(line) for line in raw.splitlines() if line.startswith('{')]
         allowed = {'agent_message', 'reasoning'}
         if sum(e.get('type') == 'turn.completed' for e in events) != 1 or any(
@@ -761,54 +752,13 @@ def codex(prepared, command, workspace):
         if not recovery['items_saved']:
             raise ValueError('no completed judgments; leave pending')
         status = 'partial' if recovery['pending_pmids'] or recovery['unreadable'] else 'completed'
-        print(json.dumps({'type': 'cbma.single_response', 'judge_path': VERSION, 'attempt_id': directory.name,
-                          **recovery, 'payload_sha256': prepared['payload_sha256'], 'audit': str(directory)}))
-        return 0
+        return recovery
     except BaseException as exc:
         error = f'{type(exc).__name__}: {exc}'
+        if isinstance(exc, subprocess.TimeoutExpired):
+            status = 'timeout'
         raise
     finally:
         usage, reported = event_usage(directory / 'events.jsonl')
         finish_attempt(directory, status=status, error=error, recovery=recovery,
                        usage=usage if reported else None, usage_reported=reported)
-
-
-def codex_entry(arm, argv, portable=False):
-    if os.environ.get('CBMA_CODEX_BATCH_JUDGE') == '1':
-        raise ValueError('recursive judges are forbidden')
-    if len(argv) != 3:
-        raise ValueError('expected PROJECT STAGE BATCH')
-    project, stage, value = argv
-    if not re.fullmatch(r'[a-z0-9_]+', project) or stage not in EXPECTED:
-        raise ValueError('invalid project or stage')
-    arm = Path(arm).resolve()
-    workspace = arm / 'projects' / project
-    batch = Path(value).resolve()
-    if batch.parent != (workspace / project / 'work' / stage).resolve():
-        raise ValueError('batch must belong to requested workspace/stage')
-    prepared = prepare(batch, workspace / '.agents' / 'skills')
-    if prepared['batch']['stage'] != stage:
-        raise ValueError('batch stage mismatch')
-    if portable:
-        config = json.loads((arm / 'arm.json').read_text())['stage_models'][stage]
-        command = [str(arm / 'codex_session.sh'), 'exec', config['model'], config['effort']]
-    else:
-        if arm.name not in ('e6-codex', 'e6-codex-luna'):
-            raise ValueError('unexpected Portkey arm')
-        model = 'gpt-6-luna' if stage in ('abstract', 'fulltext') or arm.name == 'e6-codex-luna' else 'gpt-6-astra'
-        effort = 'low' if stage in ('abstract', 'extraction') else 'medium'
-        command = [str(arm.parent / 'portkey_codex.sh'), 'exec', model, effort]
-    with Path(str(batch) + '.judge.lock').open('a+') as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return 4
-        return codex(prepared, command, workspace)
-
-
-if __name__ == '__main__':
-    try:
-        sys.exit(codex_entry(sys.argv[1], sys.argv[2:]))
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        print(f'{VERSION}: {exc}', file=sys.stderr)
-        sys.exit(2)

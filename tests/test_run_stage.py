@@ -76,7 +76,7 @@ screening:
     fake.write_text(FAKE_CLAUDE)
     monkeypatch.chdir(ws)
     code = run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "2",
-                           "--claude", f"{sys.executable} {fake}"])
+                           "--cli", f"{sys.executable} {fake}"])
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["done"] and summary["pending"] == 0
     assert summary["accepted"] == 3 and summary["agent"] == "claude-code/m1/effort-low/single-response-v2"
@@ -113,7 +113,7 @@ def test_a_pilot_limit_holds_across_rounds(tmp_path, capsys, monkeypatch):
     fake.write_text(FAKE_CLAUDE)
     monkeypatch.chdir(ws)
     run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "1", "--limit", "1",
-                    "--claude", f"{sys.executable} {fake}"])
+                    "--cli", f"{sys.executable} {fake}"])
     summary = json.loads(capsys.readouterr().out)
     # pending counts the pilot's own scope; the rest of the stage is reported separately and
     # is never batched by a pilot's retries.
@@ -149,7 +149,7 @@ def test_a_leftover_judge_log_is_not_mistaken_for_a_batch(tmp_path, capsys, monk
     log.write_text(json.dumps({"usage": {"input_tokens": 7}, "total_cost_usd": 0.5}))
     monkeypatch.chdir(ws)
     code = run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "2",
-                           "--claude", f"{sys.executable} {fake}"])
+                           "--cli", f"{sys.executable} {fake}"])
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["done"] and summary["accepted"] == 3
     judged = [json.loads(line)["prompt"] for line in open(f"{fake}.calls")]
@@ -182,7 +182,7 @@ def test_a_second_process_will_not_work_a_locked_stage(tmp_path, capsys, monkeyp
                                                      "stage": "abstract", "started": "now"}))
     monkeypatch.chdir(ws)
     code = run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "2",
-                           "--claude", f"{sys.executable} {fake}"])
+                           "--cli", f"{sys.executable} {fake}"])
     out = json.loads(capsys.readouterr().out)
     assert code == 4 and out["stage_busy"]["pid"] == os.getpid()
     assert not (rv / "decisions" / "abstract.jsonl").exists()        # nothing was judged
@@ -200,7 +200,7 @@ def test_a_lock_left_by_a_dead_process_is_taken_over(tmp_path, capsys, monkeypat
                                                      "stage": "abstract", "started": "earlier"}))
     monkeypatch.chdir(ws)
     code = run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "2",
-                           "--claude", f"{sys.executable} {fake}"])
+                           "--cli", f"{sys.executable} {fake}"])
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["accepted"] == 3
     assert summary["took_over_lock_from"]["pid"] == dead.pid         # and says so, for the run notes
@@ -229,7 +229,7 @@ def test_a_reply_wrapped_in_a_json_fence_is_accepted(tmp_path, capsys, monkeypat
     monkeypatch.chdir(ws)
     monkeypatch.setenv("FAKE_FENCE", "1")
     code = run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "2",
-                           "--claude", f"{sys.executable} {fake}"])
+                           "--cli", f"{sys.executable} {fake}"])
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["done"] and summary["accepted"] == 3
     assert summary["usage"]["attempts"] == 2 and not summary["judge_failures"]    # no re-judging
@@ -243,7 +243,7 @@ def test_the_cli_structured_output_is_used_and_the_schema_is_passed(tmp_path, ca
     monkeypatch.chdir(ws)
     monkeypatch.setenv("FAKE_STRUCTURED", "1")
     code = run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "2",
-                           "--claude", f"{sys.executable} {fake}"])
+                           "--cli", f"{sys.executable} {fake}"])
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["done"] and summary["accepted"] == 3 and not summary["judge_failures"]
     argv = json.loads(open(f"{fake}.calls").readline())["argv"]
@@ -264,7 +264,7 @@ def test_a_session_limit_stops_dispatch_and_refunds_the_attempt(tmp_path, capsys
     monkeypatch.chdir(ws)
     monkeypatch.setenv("FAKE_SESSION_LIMIT_ONCE", str(tmp_path / "refused"))
     argv = [str(rv), "--stage", "abstract", "--model", "m1", "--size", "3", "--parallel", "1",
-            "--max-attempts", "1", "--claude", f"{sys.executable} {fake}"]
+            "--max-attempts", "1", "--cli", f"{sys.executable} {fake}"]
     run_stage.main(argv)
     first = json.loads(capsys.readouterr().out)
     assert first["usage_limited"] and first["accepted"] == 0 and first["usage"]["attempts"] == 1
@@ -282,7 +282,7 @@ def test_the_runner_finds_the_workspace_agents_from_any_directory(tmp_path, caps
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
     code = run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "3",
-                           "--claude", f"{sys.executable} {fake}"])
+                           "--cli", f"{sys.executable} {fake}"])
     summary = json.loads(capsys.readouterr().out)
     assert code == 0 and summary["accepted"] == 3 and summary["effort"] == "low"
 
@@ -299,3 +299,80 @@ def test_attempts_from_another_extraction_input_are_counted_separately():
     unlabelled = bk.identity(dict(base, stage="extraction"), item)
     assert tables != full and full == unlabelled
     assert bk.identity(dict(base, stage="selection"), item) == bk.identity(dict(base, stage="selection", input_view="x"), item)
+
+
+FAKE_CODEX = r'''
+import json, os, re, sys
+# `codex exec --json`: the prompt arrives on stdin, events stream to stdout as JSON lines, and the
+# final answer is written to the --output-last-message file.
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+open(sys.argv[0] + ".calls", "a").write(json.dumps({"prompt": prompt, "argv": args}) + "\n")
+batch = json.load(open(re.search(r"^CBMA_SINGLE_RESPONSE_V\d batch=(.+)$", prompt, re.M).group(1)))
+lines = prompt.split("\n")
+start = next(i for i, line in enumerate(lines) if line.startswith("Judge these supplied items"))
+items = json.loads(lines[start + 1])["items"]
+reply = {"items": [{"pmid": it["pmid"], "decision": "uncertain", "reason": "fake",
+                    "criteria": {k: "unclear" for k in batch["criteria"]}} for it in items], "unresolved": []}
+open(args[args.index("--output-last-message") + 1], "w").write(json.dumps(reply))
+if os.environ.get("FAKE_TOOL") == "1":
+    print(json.dumps({"type": "item.completed", "item": {"type": "command_execution", "command": "ls"}}))
+print(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": json.dumps(reply)}}))
+print(json.dumps({"type": "turn.completed", "usage": {"input_tokens": 5, "cached_input_tokens": 100,
+                                                       "output_tokens": 20}}))
+'''
+
+
+def codex_workspace(tmp_path):
+    """Like workspace(), without .claude/agents: a Codex user has none, so efforts come from the
+    package's own agent definitions."""
+    ws, rv, _ = workspace(tmp_path)
+    shutil.rmtree(ws / ".claude")
+    fake = tmp_path / "fake_codex.py"
+    fake.write_text(FAKE_CODEX)
+    return ws, rv, fake
+
+
+def test_the_codex_harness_judges_with_one_tool_free_exec_turn(tmp_path, capsys, monkeypatch):
+    ws, rv, fake = codex_workspace(tmp_path)
+    monkeypatch.chdir(ws)
+    code = run_stage.main([str(rv), "--stage", "abstract", "--model", "gpt-x", "--size", "2",
+                           "--harness", "codex", "--cli", f"{sys.executable} {fake}"])
+    summary = json.loads(capsys.readouterr().out)
+    assert code == 0 and summary["done"] and summary["accepted"] == 3 and not summary["judge_failures"]
+    assert summary["agent"] == "codex-cli/gpt-x/effort-low/single-response-v2"
+    assert summary["usage"]["attempts"] == 2 and summary["usage"]["output_tokens"] == 40
+    assert summary["usage"]["attempts_with_unknown_usage"] == 0
+    for call in (json.loads(line) for line in open(f"{fake}.calls")):
+        argv = call["argv"]
+        assert argv[:3] == ["exec", "-m", "gpt-x"] and argv[-1] == "-"
+        assert 'model_reasoning_effort="low"' in argv and "features.shell_tool=false" in argv
+        assert argv[argv.index("--sandbox") + 1] == "read-only"
+        assert "## Scientific skill: screen-studies" in call["prompt"]
+    decisions = [json.loads(line) for line in open(rv / "decisions" / "abstract.jsonl")]
+    assert {d["agent"] for d in decisions} == {"codex-cli/gpt-x/effort-low/single-response-v2"}
+    assert (rv / "work" / "abstract" / "codex_runner" / "state.json").exists()
+
+
+def test_a_codex_judge_that_uses_a_tool_saves_nothing(tmp_path, capsys, monkeypatch):
+    """The answer is discarded, not ingested, when the event stream shows any tool use."""
+    ws, rv, fake = codex_workspace(tmp_path)
+    monkeypatch.chdir(ws)
+    monkeypatch.setenv("FAKE_TOOL", "1")
+    code = run_stage.main([str(rv), "--stage", "abstract", "--model", "gpt-x", "--size", "3",
+                           "--rounds", "1", "--harness", "codex", "--cli", f"{sys.executable} {fake}"])
+    summary = json.loads(capsys.readouterr().out)
+    assert code == 3 and summary["accepted"] == 0 and summary["pending"] == 3
+    assert "judge used a tool" in summary["judge_failures"][0]["error"]
+    assert not (rv / "decisions" / "abstract.jsonl").exists() or not (rv / "decisions" / "abstract.jsonl").read_text()
+
+
+def test_a_batch_judge_cannot_start_a_stage_runner(tmp_path, monkeypatch):
+    ws, rv, fake = codex_workspace(tmp_path)
+    monkeypatch.setenv("CBMA_BATCH_JUDGE", "1")
+    try:
+        run_stage.main([str(rv), "--stage", "abstract", "--model", "gpt-x", "--harness", "codex"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("the runner started inside a judge")

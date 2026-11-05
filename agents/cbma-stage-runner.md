@@ -38,7 +38,7 @@ string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-l
 
    ```bash
    PYTHON SKILLS/cbma-review/scripts/run_stage.py REVIEW --stage <stage> \
-       --model <model id from AGENT> --add-dir "$(realpath SKILLS/cbma-review/../..)" [--size <n>] [--limit N]
+       --model <model id from AGENT> [--size <n>] [--limit N]
    ```
 
    Give this command a 10-minute timeout (600000 ms): it runs for up to 9 minutes.

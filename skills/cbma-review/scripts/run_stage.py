@@ -1,13 +1,16 @@
 """Run one judged stage mechanically: batches, one headless judge per batch, ingest, retries.
 
     python run_stage.py REVIEW --stage fulltext --model claude-opus-5-5 \\
-        [--size 2] [--limit N] [--parallel 8] [--time-budget 540] [--add-dir PACKAGE]
+        [--harness claude|codex] [--size 2] [--limit N] [--parallel 8] [--time-budget 540]
 
-Run it from the workspace: the folder whose `.claude/agents/` holds the judge
-definitions. Each batch is judged by a fresh tool-free `claude -p` session. Python supplies the
-scientific skills and complete stage inputs; the model returns one JSON response.
-Python saves existing output formats for unchanged ledger validation. Effort and
-thinking budgets retain their workspace configuration.
+Each batch is judged by a fresh tool-free session of the harness's CLI: `claude -p`, or
+`codex exec` with `--harness codex`. Python supplies the scientific skills and complete
+stage inputs; the model returns one JSON response, which Python saves in the ledger's
+output format for unchanged validation.
+
+Each judge's reasoning effort is the `effort:` line of its agent definition, read from the
+workspace's `.claude/agents/` (beside the review folder) when it has one, and otherwise
+from the package's own `agents/`.
 
 The script is resumable, and it stops at --time-budget seconds. It stops launching
 judges well before then and waits for those running, so a caller whose commands time
@@ -23,7 +26,7 @@ It prints one JSON summary: accepted, rejected, pending, judge failures, and the
 judges' cumulative reported usage from immutable per-attempt records. Missing CLI
 usage is explicitly counted as unknown; native `.judge.json` logs remain compatible.
 
-Workspaces can opt into model-specific fixed thinking budgets with
+Claude workspaces can opt into model-specific fixed thinking budgets with
 `.claude/agents/judge_thinking_budgets.json` (a `model` ID and `stages` mapping).
 The configured budget sets MAX_THINKING_TOKENS only for judge subprocesses and is
 recorded in their result logs, the stage summary, and the ledger agent string.
@@ -59,7 +62,9 @@ import stage_bookkeeping as bookkeeping  # noqa: E402
 JUDGE = {"abstract": "cbma-abstract-screener", "fulltext": "cbma-fulltext-screener",
          "extraction": "cbma-extractor", "selection": "cbma-selector"}
 SIZE = {"abstract": 25, "fulltext": 2, "extraction": 1, "selection": 1}
-USAGE = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+# The CLI each harness runs, and the name its decisions are recorded under.
+HARNESS = {"claude": "claude-code", "codex": "codex-cli"}
+PACKAGE_AGENTS = Path(ledger.SKILLS_ROOT).parent / "agents"
 
 
 def judge_thinking_budget(agents_dir: Path, model: str, stage: str) -> Optional[int]:
@@ -85,13 +90,17 @@ def agent_effort(agents_dir: Path, judge: str) -> str:
 def judge_one(batch: Path, stage: str, args, skills: Path, timeout=None) -> dict:
     started = time.monotonic()
     effort = agent_effort(args.agents_dir, JUDGE[stage])
-    directory = single_response.new_attempt(batch, 'claude', args.model, effort)
+    directory = single_response.new_attempt(batch, args.harness, args.model, effort)
     recovery = None
+    timeout = timeout if timeout is not None else args.judge_timeout
     try:
         prepared = single_response.prepare(batch, skills)
-        recovery = single_response.claude(prepared, shlex.split(args.claude), args.model,
-            effort, timeout if timeout is not None else args.judge_timeout,
-            getattr(args, "max_thinking_tokens", None), directory=directory)
+        if args.harness == "claude":
+            recovery = single_response.claude(prepared, shlex.split(args.cli), args.model, effort, timeout,
+                getattr(args, "max_thinking_tokens", None), directory=directory)
+        else:
+            recovery = single_response.codex(prepared, shlex.split(args.cli), args.model, effort, timeout,
+                directory=directory)
         ok, err = True, None
     except subprocess.TimeoutExpired:
         ok, err = False, f"timed out after {timeout or args.judge_timeout}s"
@@ -106,8 +115,8 @@ def judge_one(batch: Path, stage: str, args, skills: Path, timeout=None) -> dict
             "judge_path": single_response.VERSION, "seconds": round(time.monotonic() - started)}
 
 
-def usage_of(work: Path) -> dict:
-    return single_response.usage_of(work, 'claude')
+def usage_of(work: Path, harness: str) -> dict:
+    return single_response.usage_of(work, harness)
 
 
 def ingest(review: Path, stage: str, agent: str, summary: dict) -> None:
@@ -194,31 +203,38 @@ def main(argv=None) -> int:
     ap.add_argument("--time-budget", type=int, default=540, help="seconds before this call returns")
     ap.add_argument("--judge-timeout", type=int, default=900)
     ap.add_argument("--agents-dir", type=Path, default=None,
-                    help="judge definitions (default: the workspace's .claude/agents, beside the review folder)")
-    ap.add_argument("--add-dir", action="append", default=[], help="passed to each judge (e.g. the package)")
-    ap.add_argument("--claude", default="claude", help="the claude CLI command (tests pass a fake)")
-    ap.add_argument("--harness", default="claude-code")
+                    help="judge definitions (default: the workspace's .claude/agents, beside the review "
+                         "folder, else the package's agents/)")
+    ap.add_argument("--harness", choices=list(HARNESS), default="claude", help="which CLI judges the batches")
+    ap.add_argument("--cli", help="the harness's CLI command (default: claude or codex; a wrapper that "
+                                  "forwards its arguments works, and tests pass a fake)")
     args = ap.parse_args(argv)
+    if os.environ.get("CBMA_BATCH_JUDGE") == "1":
+        ap.error("a batch judge cannot start a stage runner")
+    args.cli = args.cli or args.harness
     if args.agents_dir is None:
         # The workspace's own settings, wherever the runner is started from. Relative to the current
         # directory, a call made elsewhere lost the judges' effort and thinking budgets.
         here = Path(".claude/agents")
         beside = args.review_dir.resolve().parent / ".claude" / "agents"
-        args.agents_dir = beside if beside.is_dir() or not here.is_dir() else here
+        args.agents_dir = next((d for d in (beside, here) if (d / f"{JUDGE[args.stage]}.md").is_file()),
+                               PACKAGE_AGENTS)
     if any(n <= 0 for n in (args.size or SIZE[args.stage], args.parallel, args.rounds,
                             args.max_attempts, args.time_budget, args.judge_timeout)) or (
                             args.limit is not None and args.limit <= 0):
         ap.error("numeric controls must be positive")
-    try:
-        args.max_thinking_tokens = judge_thinking_budget(args.agents_dir, args.model, args.stage)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        ap.error(f"invalid judge thinking-budget configuration: {exc}")
+    args.max_thinking_tokens = None
+    if args.harness == "claude":
+        try:
+            args.max_thinking_tokens = judge_thinking_budget(args.agents_dir, args.model, args.stage)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            ap.error(f"invalid judge thinking-budget configuration: {exc}")
 
     review = args.review_dir.resolve()
     skills = Path(ledger.SKILLS_ROOT)
     judge = JUDGE[args.stage]
     effort = agent_effort(args.agents_dir, judge)
-    agent = f"{args.harness}/{args.model}/effort-{effort}"
+    agent = f"{HARNESS[args.harness]}/{args.model}/effort-{effort}"
     if args.max_thinking_tokens is not None:
         agent += f"/thinking-budget-{args.max_thinking_tokens}"
     agent += "/" + single_response.VERSION
@@ -235,7 +251,8 @@ def main(argv=None) -> int:
         if stale:
             # An earlier call died holding the stage. Its batches, if any, are picked up below.
             summary["took_over_lock_from"] = stale
-        state_dir = work / 'claude_runner'
+        # Per harness, so attempt counts and pilot scopes of either runner layout carry over.
+        state_dir = work / f'{args.harness}_runner'
         state_dir.mkdir(exist_ok=True)
         state_path = state_dir / 'state.json'
         state = json.loads(state_path.read_text()) if state_path.exists() else {'attempts': {}, 'pilots': {}}
@@ -329,7 +346,7 @@ def main(argv=None) -> int:
                        waiting_batches=len(waiting), retry_exhausted=sorted(exhausted),
                        max_attempts=args.max_attempts, provider_blocked=blocked, usage_limited=blocked,
                        batched_but_pending=sorted({it['pmid'] for b in waiting
-                           for it in json.loads(b.read_text())['items']})[:50], usage=usage_of(work),
+                           for it in json.loads(b.read_text())['items']})[:50], usage=usage_of(work, args.harness),
                        done=not scoped_pending, logs=str(state_dir))
         bookkeeping.write_state(state_dir / 'last_summary.json', summary)
 
