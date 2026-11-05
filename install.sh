@@ -21,4 +21,4 @@ echo "copied $(ls "$here"/agents/*.md | wc -l) agent definitions into $ws/.claud
 # Record what was installed. `ledger.py status` compares against it and reports any later
 # edit to the skills, scripts or judge settings.
 python3 "$here/skills/cbma-review/scripts/ledger.py" lock "$ws" >/dev/null
-echo "recorded the installed files in $ws/.cbma-skills.lock"
+echo "recorded the installed files in $ws/.autonima-skills.lock"

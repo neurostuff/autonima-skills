@@ -1,4 +1,4 @@
-"""Offline tests for the cbma-skills scripts. No network: NCBI calls go to fakes.
+"""Offline tests for the autonima-skills scripts. No network: NCBI calls go to fakes.
 
     pip install pytest pyyaml
     pytest tests

@@ -73,7 +73,7 @@ def test_status_reports_edits_made_after_install(tmp_path):
     (review / "review.yaml").write_text("objective: t\nsearch: {query: q}\nscreening:\n"
                                         "  abstract: {inclusion: [H]}\n  fulltext: {inclusion: [W]}\n")
     subprocess.run(["bash", str(pkg / "install.sh"), str(ws)], check=True, capture_output=True)
-    lock = json.loads((ws / ".cbma-skills.lock").read_text())
+    lock = json.loads((ws / ".autonima-skills.lock").read_text())
     assert "skills/cbma-review/scripts/run_stage.py" in lock["files"]
     assert "agents/cbma-selector.md" in lock["files"] and lock["package"] == str(pkg)
     assert status_package(pkg, review)["lock"] == "ok"

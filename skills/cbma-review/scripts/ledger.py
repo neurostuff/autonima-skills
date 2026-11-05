@@ -1147,7 +1147,7 @@ def cmd_import_analyses(rv: Review, agent: str) -> dict:
 # Package lock: the skill and judge files a workspace was installed with
 # --------------------------------------------------------------------------- #
 
-LOCK_NAME = ".cbma-skills.lock"
+LOCK_NAME = ".autonima-skills.lock"
 
 
 def _tree_hashes(root: Path, prefix: str, names: str = "*") -> Dict[str, str]:
@@ -1352,7 +1352,7 @@ def cmd_export(rv: Review, allow_pending: bool, include_table_only: bool) -> dic
     studyset = {"id": f"cbma_skills_{name}", "name": name, "description": rv.spec["objective"],
                 "publication": None, "doi": None, "pmid": None, "studies": studies}
     annotation = {"id": "cbma_skills", "name": "cbma_skills_selection",
-                  "description": "Analysis selection decisions recorded by the cbma-skills ledger",
+                  "description": "Analysis selection decisions recorded by the autonima-skills ledger",
                   "studyset_id": studyset["id"], "note_keys": {t: "boolean" for t in targets}, "notes": notes}
     out = rv.root / "results" / "nimads"
     write_json(out / "studyset.json", studyset)

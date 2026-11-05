@@ -44,7 +44,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
 ESEARCH_CAP = 9999
 FETCH_BATCH = 200
-TOOL = "cbma-skills"
+TOOL = "autonima-skills"
 
 Http = Callable[[str, Dict[str, str]], bytes]
 

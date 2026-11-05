@@ -48,7 +48,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import docnorm  # noqa: E402
 
 EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
-TOOL = "cbma-skills"
+TOOL = "autonima-skills"
 Http = Callable[[str, Dict[str, str]], bytes]
 
 
