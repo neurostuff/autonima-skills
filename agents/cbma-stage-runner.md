@@ -60,6 +60,9 @@ string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-l
    - **`usage_limited` true:** stop, and report.
    - **The same items `batched_but_pending` twice running:** that is an input problem.
      Report the items; do not keep retrying.
+   - **`retry_exhausted`:** items that used up their attempts (3 by default, counted
+     across calls). They stay pending: an execution problem, never an exclusion.
+     Report them.
    - **Record the numbers:** keep the summaries' accepted, rejected, judge failures and
      `usage` token totals for your report.
 3. **Fallback,** only when the `claude` CLI is not available to you. Dispatch judges
@@ -130,32 +133,3 @@ The verdict is PROBLEM when an item you batched is still pending, when the audit
 more than one disagreement, when a usage limit stopped the stage, or when a note needs
 a decision. Items left unbatched by a pilot's `--limit` are expected: report their
 count, but they alone do not make a PROBLEM.
-
-## Runner scheduling, recovery and usage — shared update
-
-New stage-runner invocations use `single-response-v2`. Scientific criteria, inputs,
-models and effort/thinking settings are unchanged. Stable criteria and response
-schemas now precede varying items and batch identifiers in judge prompts.
-
-Both harnesses launch only available worker slots, cap judge timeouts to the
-remaining stage budget, and stop submitting new calls after provider-limit or
-authentication failures. `--max-attempts` defaults to 3 and persists for each
-unchanged study/criteria/input combination across invocations. Exhausted studies
-remain pending and do not block healthy batch mates. `retry_exhausted` is an
-execution problem, never a scientific exclusion; repairing scientific inputs gives
-a new identity. Raising `--max-attempts` explicitly permits further attempts.
-Claude pilots now save their scope so retries never expand into unscreened records.
-
-For syntactically valid JSON responses, complete valid studies are saved while
-malformed, duplicate, unresolved or incomplete studies stay pending. Selection
-requires all analysis × target pairs; combined-mode scientific completeness remains
-validated by the original ledger. Truncated/invalid JSON is not guessed or repaired.
-
-Every new attempt has a unique directory under `work/STAGE/judge_responses/`,
-including raw CLI output, input hashes, recovery details and `attempt.json`.
-Failures and timeouts are retained. Stage `usage` is cumulative and counts each
-attempt once, including rejected judgments; unavailable token usage and cost are
-reported explicitly as unknown. Existing legacy logs are retained, but previously
-overwritten attempts cannot be recovered. Codex also reports `usage_this_invocation`.
-Existing processes are not interrupted; use the usual launch commands on the next
-runner invocation. Scientific audits remain required.
