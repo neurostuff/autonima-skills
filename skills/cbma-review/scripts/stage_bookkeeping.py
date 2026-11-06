@@ -59,5 +59,7 @@ def provider_blocked(error):
     # runs: 216 and 728 refused calls), each counted against the study's attempt cap.
     return bool(re.search(r'\b429\b|rate[_ -]?limit|usage limit|session limit|weekly limit|'
                           r'hit your [a-z ]*limit|quota|'
-                          r'authentication|unauthorized|HTTP (?:401|403)|insufficient credits',
+                          # "Failed to authenticate: OAuth session expired" when the CLI's login lapsed.
+                          r'authenticat|oauth|not logged in|/login|unauthorized|HTTP (?:401|403)|'
+                          r'insufficient credits',
                           error or '', re.I))
