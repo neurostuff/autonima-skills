@@ -28,6 +28,7 @@ import csv
 import datetime as dt
 import hashlib
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -139,6 +140,13 @@ def _year(date: Optional[str]) -> Optional[int]:
     return int(str(date)[:4]) if date else None
 
 
+def clean_pmid(value) -> Optional[str]:
+    """A PMID as the rest of the review keys it: digits only. NeuroStore carries the odd other value,
+    such as "29083990-DUPLICATE" on a duplicate base study, which is not guessed into a PMID."""
+    text = str(value or "").strip()
+    return text if text.isdigit() else None
+
+
 # --------------------------------------------------------------------------- #
 # search
 # --------------------------------------------------------------------------- #
@@ -203,9 +211,14 @@ def cmd_search(review: Path, client: Optional[Client] = None) -> dict:
             results = [r for r in results if r.get("id") not in excluded]
         else:
             results, total = client.search(params["query"], params["search_full_text"], *filters)
-        pmids = sorted({str(r["pmid"]) for r in results if r.get("pmid")}, key=int)
+        pmids = sorted({p for p in (clean_pmid(r.get("pmid")) for r in results) if p}, key=int)
+        # Logged, not carried and not repaired: whether its number is also a result says if it was a
+        # duplicate of a study that is in anyway.
+        malformed = [{"id": r.get("id"), "pmid": r.get("pmid"), "name": r.get("name"), "doi": r.get("doi"),
+                      "number_also_found": next(iter(re.findall(r"\d+", str(r["pmid"]))), None) in pmids}
+                     for r in results if r.get("pmid") and not clean_pmid(r.get("pmid"))]
         log = {"params": params, "translation": translated, "base_url": client.base_url, "searched_at": now(),
-               "reported_total": total, "base_studies": len(results), "pmids": pmids,
+               "reported_total": total, "base_studies": len(results), "pmids": pmids, "malformed_pmid": malformed,
                # The rest of the review is keyed on PMIDs, so these cannot be carried.
                "without_pmid": [{"id": r.get("id"), "name": r.get("name"), "doi": r.get("doi")}
                                 for r in results if not r.get("pmid")],
@@ -215,6 +228,7 @@ def cmd_search(review: Path, client: Optional[Client] = None) -> dict:
     (out / "neurostore_search_log.json").write_text(json.dumps(log, indent=1))
     (out / "neurostore_pmids.txt").write_text("".join(f"{p}\n" for p in log["pmids"]))
     report = {"pmids": len(log["pmids"]), "without_pmid": len(log.get("without_pmid", [])),
+              "malformed_pmid": [m["pmid"] for m in log.get("malformed_pmid", [])],
               "frozen": bool(cfg.get("snapshot")), "written": str(out / "neurostore_pmids.txt")}
     if translation is not None:
         # The agent shows these to the user: what the PubMed query lost on the way to NeuroStore.

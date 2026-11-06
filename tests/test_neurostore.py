@@ -117,7 +117,7 @@ def quiet(fn, *args):
 
 def test_search_writes_every_pmid_and_logs_the_rest(review, api):
     out = ns.cmd_search(review, ns.Client())
-    assert out == {"pmids": 3, "without_pmid": 1, "frozen": False,
+    assert out == {"pmids": 3, "without_pmid": 1, "malformed_pmid": [], "frozen": False,
                    "written": str(review / "search" / "neurostore_pmids.txt")}
     assert (review / "search" / "neurostore_pmids.txt").read_text().split() == PMIDS
     log = json.loads((review / "search" / "neurostore_search_log.json").read_text())
@@ -308,3 +308,17 @@ def test_the_pubmed_script_never_runs_a_translated_query_on_pubmed(review, monke
     monkeypatch.setattr(pubmed, "run", fake_run)
     assert quiet(pubmed.main, [str(review)]) == 0
     assert seen == {"query": None, "neurostore_pmids": ["11111111"]}
+
+
+def test_a_malformed_pmid_is_logged_not_carried(review, api):
+    """NeuroStore returned "29083990-DUPLICATE" for a duplicate base study; sorting PMIDs as
+    numbers crashed the search."""
+    api.search_results.append({"id": "bsdup", "pmid": "11111111-DUPLICATE", "name": "dup"})
+    api.search_results.append({"id": "bsodd", "pmid": "PMC123", "name": "odd"})
+    api.total = len(api.search_results)
+    out = ns.cmd_search(review, ns.Client())
+    assert out["pmids"] == 3 and out["malformed_pmid"] == ["11111111-DUPLICATE", "PMC123"]
+    assert (review / "search" / "neurostore_pmids.txt").read_text().split() == PMIDS
+    log = json.loads((review / "search" / "neurostore_search_log.json").read_text())
+    assert [(m["pmid"], m["number_also_found"]) for m in log["malformed_pmid"]] == [
+        ("11111111-DUPLICATE", True), ("PMC123", False)]
