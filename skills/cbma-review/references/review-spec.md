@@ -157,3 +157,30 @@ Every decision stores two hashes, and it stays valid only while both still match
 
 Nothing else re-opens a decision. Re-running a stage after a change batches only
 the re-opened items.
+
+## Registration and amendments
+
+`review.yaml` takes effect only once registered (`ledger.py register REVIEW`). Each
+registration or amendment writes the next `protocol/vNNN.json`, holding:
+- the file's text;
+- every stage's criteria hash;
+- the judges' effort and the workspace's `judge_*.json` settings;
+- the installed package's lock;
+- the hash of the version before it.
+
+Every decision records the version it was judged under. Batching, ingesting and
+exporting refuse while the live protocol differs from the latest version, and the
+refusal names what differs. Comments in `review.yaml` are not part of it; every
+other change is.
+
+| When | How the change is registered |
+|---|---|
+| nothing has been judged yet | `ledger.py register REVIEW [--reason ...]`, run by the agent once the user confirms |
+| anything has been judged, a pilot included | `ledger.py amend REVIEW --reason "..."`, run by the user in a terminal: it shows the difference and the decisions it re-opens, and asks for typed confirmation |
+
+An amendment re-opens decisions as the table above describes; decisions it does not
+re-open stay valid, under the version that made them. `status` and the NiMADS export
+list every version with its kind, reason, time and the number of judgments it made.
+
+This is a guardrail and an audit trail. A local file cannot prove when it was
+written; a protocol registered on Neurosynth Compose can.

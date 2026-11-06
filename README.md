@@ -49,6 +49,16 @@ In the agent, from the workspace:
 The `cbma-review` skill walks the stages. If `review.yaml` does not exist yet, it writes
 it with you first; `skills/cbma-review/references/review-spec.md` is the format.
 
+Once you confirm the criteria, the agent registers them as protocol v1. From the first
+judgment on, the agent cannot change them. You amend them yourself, in a terminal, with
+a reason:
+
+```bash
+python autonima-skills/skills/cbma-review/scripts/ledger.py amend REVIEW --reason "..."
+```
+
+Every version is kept, and the results carry the whole record.
+
 Every judged stage runs through `skills/cbma-review/scripts/run_stage.py`:
 - **One judge per batch:** a fresh, tool-free session of your harness's CLI, `claude -p`
   or `codex exec`.
@@ -102,6 +112,7 @@ mechanical:
 | criteria IDs numbered per stage; decisions keyed on hashes of criteria, skill text and input | renumbered IDs reusing stale decisions; hand-bumped prompt versions |
 | full-text evidence quotes checked against the text | ungrounded reasons (#38) |
 | installed files locked; status names any later edit | skills and judge settings changed mid-review without a record |
+| nothing is judged under an unregistered or silently changed protocol; after the first judgment only the user, at a terminal, can amend it, with a reason | criteria revised after seeing results, with no record of when or why |
 
 Issue numbers are [autonima's](https://github.com/neurostuff/autonima/issues).
 
@@ -123,8 +134,6 @@ The tests run offline against fixtures and fake judge CLIs. They cover:
 ## Status
 
 Under active development. Next steps:
-- **Protocol registration:** a registered, versioned `review.yaml`, with amendments
-  only by the user, and the version chain in every export.
 - **Lower token use per stage.**
 - **Criteria drafting:** a skill that helps you write `review.yaml`.
 - **A review page** for checking decisions.

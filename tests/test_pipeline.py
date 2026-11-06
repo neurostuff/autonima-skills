@@ -258,6 +258,7 @@ print(len(batch["items"]))
 def test_run_batches_passes_the_prompt_past_list_options(review, tmp_path, capsys):
     import subprocess
     assert run_ledger("init", review) == 0
+    assert run_ledger("register", review) == 0
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "2") == 0
     capsys.readouterr()
     agent = tmp_path / "fake_agent.py"
@@ -281,6 +282,7 @@ def test_full_flow(review, capsys):
     # per-target criteria are shown too, not only the global ones
     assert criteria["selection"]["targets"] == {"patients_gt_controls": {"I1": "Patients greater than controls"}}
     assert last_json(capsys)["targets"] == {"patients_gt_controls": {"I1": "Patients greater than controls"}}
+    assert run_ledger("register", review) == 0
 
     # ---- abstract stage: one good line, one inconsistent line, one missing
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "10") == 0
@@ -385,6 +387,12 @@ def test_full_flow(review, capsys):
     assert [a["id"] for a in studyset["studies"][0]["analyses"]] == ["11111111-tbl2-a1"]
     assert ann["notes"] == [{"analysis_id": "11111111-tbl2-a1", "annotation_id": "cbma_skills",
                              "note": {"patients_gt_controls": False}}]
+    # The results carry the protocol they were made under, and what each version judged.
+    assert report["protocol"] == {"version": 1, "amendments": 0}
+    for doc in (studyset, ann):
+        assert doc["protocol"]["matches_live"] and doc["protocol"]["judgments_without_version"] == 0
+        [v1] = doc["protocol"]["versions"]
+        assert v1["kind"] == "registration" and v1["judgments"] > 0
 
     # ---- status is consistent
     assert run_ledger("status", review) == 0
@@ -503,6 +511,7 @@ def test_extractions_under_a_migrated_skill_hash_stay_done(review, monkeypatch):
     extracted before the skill edit came back pending (all five finished runs read 0
     extracted) and the next runner would have re-extracted all of them."""
     run_ledger("init", review)
+    assert run_ledger("register", review) == 0
     rv = ledger.Review(review)
     legacy = rv.criteria["extraction"]["hash"]
     pmid = next(iter(rv.records))
@@ -532,6 +541,7 @@ def test_an_explicit_extraction_view_reopens_records_made_from_another_view(revi
     workspace back to full must reopen those records; a workspace without an explicit setting keeps
     records of any view."""
     run_ledger("init", review)
+    assert run_ledger("register", review) == 0
     rv = ledger.Review(review)
     pmid = next(iter(rv.records))
     monkeypatch.setattr(ledger.Review, "fulltext_included", lambda self: [pmid])
@@ -576,6 +586,7 @@ def test_a_study_without_parsed_tables_is_recorded_without_a_judge(review, monke
     can never yield an analysis; across eight runs none did, yet each cost a full-paper judge call.
     The ledger records it as extracted with no analyses and batches only studies with tables."""
     run_ledger("init", review)
+    assert run_ledger("register", review) == 0
     rv = ledger.Review(review)
     with_tables, without = sorted(rv.records)[:2]
     monkeypatch.setattr(ledger.Review, "pending", lambda self, stage: [with_tables, without])

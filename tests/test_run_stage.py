@@ -1,6 +1,8 @@
 """run_stage.py: the scripted judge loop, with a fake claude CLI."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -25,6 +27,12 @@ def load(name, path):
 pubmed = load("pubmed_search", SKILLS / "pubmed-search/scripts/pubmed_search.py")
 ledger = load("ledger", SKILLS / "cbma-review/scripts/ledger.py")
 run_stage = load("run_stage", SKILLS / "cbma-review/scripts/run_stage.py")
+
+
+def register(rv):
+    """Register the review's protocol, as the user does before the first judged stage."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert ledger.main(["register", str(rv)]) == 0
 
 FAKE_CLAUDE = r'''
 import json, os, re, sys
@@ -72,6 +80,7 @@ screening:
     recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
     (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
     fake = tmp_path / "fake_claude.py"
     fake.write_text(FAKE_CLAUDE)
     monkeypatch.chdir(ws)
@@ -109,6 +118,7 @@ def test_a_pilot_limit_holds_across_rounds(tmp_path, capsys, monkeypatch):
     recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
     (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
     fake = tmp_path / "fake_claude.py"
     fake.write_text(FAKE_CLAUDE)
     monkeypatch.chdir(ws)
@@ -131,6 +141,7 @@ def workspace(tmp_path):
     recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
     (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
     fake = tmp_path / "fake_claude.py"
     fake.write_text(FAKE_CLAUDE)
     return ws, rv, fake

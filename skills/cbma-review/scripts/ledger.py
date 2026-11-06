@@ -8,6 +8,8 @@ the only thing that writes decisions. Standard library plus PyYAML.
     python ledger.py status   REVIEW_DIR [--json]          # PRISMA-style counts, writes results/prisma.json
     python ledger.py export   REVIEW_DIR                   # NiMADS studyset + annotation for NiMARE
     python ledger.py import-analyses REVIEW_DIR            # records mode: analyses from pre-extracted records
+    python ledger.py register REVIEW_DIR [--reason TEXT]   # register the protocol; required before judging
+    python ledger.py amend    REVIEW_DIR --reason TEXT     # a person, at a terminal: amend it after judging began
     python ledger.py lock     WORKSPACE                    # record the installed skills (install.sh runs it)
 
 Stages, in order: abstract, fulltext, extraction, selection.
@@ -551,6 +553,7 @@ def _record_tableless(rv: Review, pmid: str, input_view: str) -> bool:
 
 
 def cmd_batches(rv: Review, stage: str, size: int, limit: Optional[int], discard: bool) -> List[Path]:
+    version = require_protocol(rv)
     input_view = extraction_input_view(rv.root) if stage == "extraction" else "full"
     work = rv.work_dir(stage)
     work.mkdir(parents=True, exist_ok=True)
@@ -592,6 +595,7 @@ def cmd_batches(rv: Review, stage: str, size: int, limit: Optional[int], discard
             # The ledger fills these in at ingest; the subagent never copies them.
             "_criteria_hash": crit["hash"],
             "_input_hashes": {p: rv.input_hash(stage, p) for p in chunk},
+            "_protocol_version": version,
         }
         if stage == "selection":
             batch["targets"] = crit["payload"]["targets"]
@@ -898,6 +902,7 @@ def validate_selection(lines: List[dict], item: dict, targets: Dict[str, dict], 
 # --------------------------------------------------------------------------- #
 
 def cmd_ingest(rv: Review, stage: str, agent: str) -> dict:
+    version = require_protocol(rv)
     work = rv.work_dir(stage)
     done_dir = work / "done"
     report = {"stage": stage, "batches": 0, "accepted": 0, "rejected": 0, "missing_output": 0, "errors": []}
@@ -917,7 +922,9 @@ def cmd_ingest(rv: Review, stage: str, agent: str) -> dict:
         accepted_rows: List[dict] = []
         items = {it["pmid"]: it for it in batch["items"]}
         base = {"stage": stage, "batch_id": batch["batch_id"], "agent": agent, "ingested_at": now(),
-                "criteria_hash": batch["_criteria_hash"]}
+                "criteria_hash": batch["_criteria_hash"],
+                # The version the judge's batch was made under; its criteria for this stage are current.
+                "protocol_version": batch.get("_protocol_version", version)}
 
         if stage in ("abstract", "fulltext"):
             try:
@@ -1084,6 +1091,7 @@ def cmd_import_analyses(rv: Review, agent: str) -> dict:
     folder = folder if folder.is_absolute() else rv.root / folder
     if not folder.is_dir():
         raise LedgerError(f"extraction.records folder {folder} does not exist")
+    version = require_protocol(rv)
     report = {"imported": 0, "with_analyses": 0, "analyses": 0, "points": 0, "space_from_analysis": 0,
               "space_unknown": 0, "no_record": []}
     crit_hash = rv.criteria["extraction"]["hash"]
@@ -1130,7 +1138,7 @@ def cmd_import_analyses(rv: Review, agent: str) -> dict:
                              for t, n in tables.items()],
                   "analyses": analyses, "stage": "extraction", "batch_id": "import", "agent": agent,
                   "ingested_at": now(), "criteria_hash": crit_hash, "input_hash": rv.input_hash("extraction", pmid),
-                  "source": {"path": str(src), "sha256": sha(raw)}}
+                  "protocol_version": version, "source": {"path": str(src), "sha256": sha(raw)}}
         write_json(rv.root / "analyses" / f"{pmid}.json", record)
         report["imported"] += 1
         report["with_analyses"] += bool(analyses)
@@ -1214,6 +1222,210 @@ def package_drift(workspace: Path) -> dict:
     return report
 
 
+# --------------------------------------------------------------------------- #
+# Protocol registration: what was registered, when, and every amendment since
+# --------------------------------------------------------------------------- #
+#
+# REVIEW/protocol/v001.json, v002.json, ... are append-only. Each version holds review.yaml, the
+# stage criteria hashes (which cover the stage skills) and the judge settings, and is chained to
+# the one before it by hash. Judging, ingesting and exporting refuse to run while the live
+# protocol differs from the latest version. Before any judgment, `register` records a new
+# version freely. After one, only `amend`, confirmed by a person at a terminal with a reason,
+# can: an agent's shell has no terminal. This is a guardrail and an audit trail. A local file
+# cannot prove when it was written; Neurosynth Compose's server-side registration can.
+
+JUDGES = {"abstract": "cbma-abstract-screener", "fulltext": "cbma-fulltext-screener",
+          "extraction": "cbma-extractor", "selection": "cbma-selector"}
+JUDGE_SETTING_FILES = ("judge_input_views", "judge_output_formats", "judge_thinking_budgets")
+
+
+def judge_definition(review_root: Path, stage: str) -> Path:
+    """The workspace's copy of a judge's definition (install.sh puts one in .claude/agents beside the
+    review folder), or the package's own when the workspace has none, as in a Codex workspace."""
+    mine = review_root.resolve().parent / ".claude" / "agents" / f"{JUDGES[stage]}.md"
+    return mine if mine.is_file() else SKILLS_ROOT.parent / "agents" / f"{JUDGES[stage]}.md"
+
+
+def judge_effort(review_root: Path, stage: str) -> str:
+    m = re.search(r"^effort:\s*(\S+)", judge_definition(review_root, stage).read_text(), re.M)
+    return m.group(1) if m else "default"
+
+
+def judge_settings(review_root: Path) -> dict:
+    """Everything outside review.yaml that changes how a judge works: each judge's effort, and the
+    workspace's judge setting files."""
+    agents = review_root.resolve().parent / ".claude" / "agents"
+    settings = {"efforts": {s: judge_effort(review_root, s) for s in STAGES}}
+    for name in JUDGE_SETTING_FILES:
+        path = agents / f"{name}.json"
+        settings[name] = json.loads(path.read_text()) if path.exists() else None
+    return settings
+
+
+def protocol_state(rv: "Review") -> dict:
+    """The parts of the live protocol a registered version must match."""
+    return {"spec_sha256": hashlib.sha256(json.dumps(rv.spec, sort_keys=True).encode()).hexdigest(),
+            "criteria_hashes": {s: rv.criteria[s]["hash"] for s in STAGES},
+            "judge_settings": judge_settings(rv.root)}
+
+
+def _record_sha(record: dict) -> str:
+    return hashlib.sha256(json.dumps({k: v for k, v in record.items() if k != "sha256"},
+                                     sort_keys=True).encode()).hexdigest()
+
+
+def protocol_versions(rv: "Review") -> List[dict]:
+    """Every registered version, oldest first, after checking that none was edited, removed or
+    re-chained, and that no decision names a version that is not there."""
+    versions = []
+    for path in sorted((rv.root / "protocol").glob("v*.json")):
+        record = json.loads(path.read_text())
+        n = len(versions) + 1
+        if path.name != f"v{n:03d}.json" or record.get("version") != n:
+            raise LedgerError(f"protocol/{path.name}: expected v{n:03d}.json; a version is missing or renamed")
+        if record.get("sha256") != _record_sha(record):
+            raise LedgerError(f"protocol/{path.name} was edited after it was registered")
+        if record.get("previous_sha256") != (versions[-1]["sha256"] if versions else None):
+            raise LedgerError(f"protocol/{path.name} does not follow v{n - 1:03d}; the chain was rewritten")
+        versions.append(record)
+    named = {r.get("protocol_version") for r in recorded_judgments(rv)} - {None}
+    if named and max(named) > len(versions):
+        raise LedgerError(f"decisions name protocol v{max(named):03d}, but only {len(versions)} versions exist; "
+                          "protocol/ was altered")
+    return versions
+
+
+def recorded_judgments(rv: "Review") -> List[dict]:
+    """Every recorded decision, valid or not, and every accepted extraction."""
+    rows = [r for s in STAGES for r in read_jsonl(rv.decisions_path(s))]
+    for path in sorted((rv.root / "analyses").glob("*.json")):
+        rows.append(json.loads(path.read_text()))
+    return rows
+
+
+def _differences(head: dict, state: dict) -> List[str]:
+    out = []
+    if head["spec_sha256"] != state["spec_sha256"]:
+        out.append("review.yaml")
+    out += [f"{s} criteria or skill" for s in STAGES if head["criteria_hashes"][s] != state["criteria_hashes"][s]]
+    out += [f"judge setting {k}" for k in sorted(state["judge_settings"])
+            if head["judge_settings"].get(k) != state["judge_settings"][k]]
+    return out
+
+
+def require_protocol(rv: "Review") -> int:
+    """The version in force, or a LedgerError saying what the user must do first."""
+    versions = protocol_versions(rv)
+    if not versions:
+        raise LedgerError("no registered protocol. Show the user the numbered criteria (`ledger.py init`), and "
+                          "once they confirm them, run `ledger.py register REVIEW`")
+    head = versions[-1]
+    changed = _differences(head, protocol_state(rv))
+    if changed:
+        what = ", ".join(changed)
+        if not recorded_judgments(rv):
+            raise LedgerError(f"{what} changed since protocol v{head['version']:03d}. Nothing has been judged yet: "
+                              "once the user confirms the change, run `ledger.py register REVIEW`")
+        raise LedgerError(f"{what} changed since protocol v{head['version']:03d} was registered, and judgments "
+                          "exist. Only a person can amend a protocol: ask the user to run `ledger.py amend REVIEW "
+                          "--reason \"...\"` in their own terminal, or revert the change. Never run amend yourself")
+    return head["version"]
+
+
+def _new_version(rv: "Review", versions: List[dict], kind: str, reason: Optional[str]) -> dict:
+    lock = rv.root.parent / LOCK_NAME
+    package = None
+    if lock.exists():
+        locked = json.loads(lock.read_text())
+        package = {"lock_sha256": locked.get("sha256"), "git": locked.get("git"),
+                   "drift": package_drift(rv.root.parent)["lock"]}
+    judged = Counter(r.get("stage", "extraction") for r in recorded_judgments(rv))
+    record = {"version": len(versions) + 1, "kind": kind, "registered_at": now(), "reason": reason,
+              **protocol_state(rv), "review_yaml": (rv.root / "review.yaml").read_text(), "package": package,
+              "judgments_recorded_before": dict(judged),
+              "previous_sha256": versions[-1]["sha256"] if versions else None}
+    record["sha256"] = _record_sha(record)
+    path = rv.root / "protocol" / f"v{record['version']:03d}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "x", encoding="utf-8") as fh:              # never overwrite a version
+        fh.write(json.dumps(record, indent=1, ensure_ascii=False) + "\n")
+    return record
+
+
+def _summary(record: dict) -> dict:
+    return {k: record[k] for k in ("version", "kind", "registered_at", "reason")} | {"sha256": record["sha256"][:16]}
+
+
+def cmd_register(rv: "Review", reason: Optional[str]) -> dict:
+    """Register the protocol, or record a revision made before anything was judged."""
+    versions = protocol_versions(rv)
+    if versions and not _differences(versions[-1], protocol_state(rv)):
+        return {"unchanged": True, **_summary(versions[-1])}
+    if versions and recorded_judgments(rv):
+        raise LedgerError("judgments exist, so this change is an amendment. Only a person can amend a protocol: "
+                          "ask the user to run `ledger.py amend REVIEW --reason \"...\"` in their own terminal")
+    record = _new_version(rv, versions, "registration" if not versions else "revision", reason)
+    out = _summary(record)
+    if record["judgments_recorded_before"]:
+        out["warning"] = (f"registered after {sum(record['judgments_recorded_before'].values())} judgments were "
+                          "already recorded; report this with the results")
+    return out
+
+
+def _confirm(prompt: str) -> str:
+    """A person's answer at a terminal. An agent's shell has none, so this is where amendments stop."""
+    if not sys.stdin.isatty():
+        raise LedgerError("amendments are confirmed by a person at a terminal, and this one has none. "
+                          "Ask the user to run this command in their own terminal")
+    return input(prompt)
+
+
+def cmd_amend(rv: "Review", reason: str) -> dict:
+    import difflib
+    if not reason or not reason.strip():
+        raise LedgerError("an amendment needs --reason: why the protocol changes, in a sentence")
+    versions = protocol_versions(rv)
+    if not versions:
+        raise LedgerError("no registered protocol to amend; run `ledger.py register REVIEW` first")
+    head, state = versions[-1], protocol_state(rv)
+    changed = _differences(head, state)
+    if not changed:
+        raise LedgerError(f"nothing differs from protocol v{head['version']:03d}; there is nothing to amend")
+    n = head["version"] + 1
+    print(f"Amending protocol v{head['version']:03d} -> v{n:03d}: {', '.join(changed)}")
+    print("".join(difflib.unified_diff(head["review_yaml"].splitlines(True),
+                                       (rv.root / "review.yaml").read_text().splitlines(True),
+                                       f"review.yaml (v{head['version']:03d})", "review.yaml (now)")))
+    for k in sorted(state["judge_settings"]):
+        if head["judge_settings"].get(k) != state["judge_settings"][k]:
+            print(f"{k}: {json.dumps(head['judge_settings'].get(k))} -> {json.dumps(state['judge_settings'][k])}")
+    for s in STAGES:
+        if head["criteria_hashes"][s] != state["criteria_hashes"][s]:
+            reopened = sum(1 for r in read_jsonl(rv.decisions_path(s)) if r.get("criteria_hash") == head["criteria_hashes"][s])
+            print(f"{s}: criteria change; {reopened} recorded decisions will be judged again")
+    print(f"Reason: {reason.strip()}")
+    if _confirm(f'Type "amend v{n:03d}" to register this amendment: ').strip() != f"amend v{n:03d}":
+        raise LedgerError("not confirmed; the protocol is unchanged")
+    return _summary(_new_version(rv, versions, "amendment", reason.strip()))
+
+
+def protocol_report(rv: "Review") -> dict:
+    """For status and export: the version chain and how many decisions each version made."""
+    try:
+        versions = protocol_versions(rv)
+    except LedgerError as exc:
+        return {"chain": "broken", "error": str(exc)}
+    if not versions:
+        return {"registered": False}
+    made = Counter(r.get("protocol_version") for r in recorded_judgments(rv))
+    head = versions[-1]
+    return {"registered": True, "version": head["version"],
+            "amendments": sum(v["kind"] == "amendment" for v in versions),
+            "matches_live": not _differences(head, protocol_state(rv)),
+            "versions": [dict(_summary(v), judgments=made.get(v["version"], 0)) for v in versions],
+            "judgments_without_version": made.get(None, 0)}
+
+
 def cmd_status(rv: Review) -> dict:
     log_path = rv.root / "search" / "search_log.json"
     search_log = json.loads(log_path.read_text()) if log_path.exists() else {}
@@ -1283,6 +1495,7 @@ def cmd_status(rv: Review) -> dict:
         "extraction": ext,
         "selection": {"pending_studies": len(rv.pending("selection")), "targets": targets},
         "criteria_hashes": {s: rv.criteria[s]["hash"] for s in STAGES},
+        "protocol": protocol_report(rv),
         "package": package_drift(rv.root.parent),
         "generated_at": now(),
     }
@@ -1302,6 +1515,8 @@ def cmd_export(rv: Review, allow_pending: bool, include_table_only: bool) -> dic
     studyset entirely rather than exported as false; without --allow-pending the
     export refuses while any are missing.
     """
+    require_protocol(rv)
+    protocol = protocol_report(rv)
     drop_unverified = (rv.spec.get("extraction") or {}).get("drop_unverified", True)
     targets = list(rv.criteria["selection"]["payload"]["targets"])
     sel = rv.valid_decisions("selection")
@@ -1350,14 +1565,16 @@ def cmd_export(rv: Review, allow_pending: bool, include_table_only: bool) -> dic
         })
     name = rv.spec.get("name") or rv.root.name
     studyset = {"id": f"cbma_skills_{name}", "name": name, "description": rv.spec["objective"],
-                "publication": None, "doi": None, "pmid": None, "studies": studies}
+                "publication": None, "doi": None, "pmid": None, "studies": studies, "protocol": protocol}
     annotation = {"id": "cbma_skills", "name": "cbma_skills_selection",
                   "description": "Analysis selection decisions recorded by the autonima-skills ledger",
-                  "studyset_id": studyset["id"], "note_keys": {t: "boolean" for t in targets}, "notes": notes}
+                  "studyset_id": studyset["id"], "note_keys": {t: "boolean" for t in targets}, "notes": notes,
+                  "protocol": protocol}
     out = rv.root / "results" / "nimads"
     write_json(out / "studyset.json", studyset)
     write_json(out / "annotation.json", annotation)
     return {"studies": len(studies), "analyses": len(notes), "targets": targets, "dropped": dict(dropped),
+            "protocol": {"version": protocol["version"], "amendments": protocol["amendments"]},
             "written": [str(out / "studyset.json"), str(out / "annotation.json")]}
 
 
@@ -1392,6 +1609,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     p.add_argument("--stage", choices=STAGES, required=True)
     p.add_argument("--agent", default=os.environ.get("CBMA_AGENT", "unknown"),
                    help="harness/model that produced the output, e.g. claude-code/<model id>")
+    p = sub.add_parser("register", help="register the protocol (or a revision, before anything is judged)")
+    p.add_argument("review_dir", type=Path)
+    p.add_argument("--reason", help="optional for the first registration")
+    p = sub.add_parser("amend", help="a person, at a terminal: amend the registered protocol")
+    p.add_argument("review_dir", type=Path)
+    p.add_argument("--reason", required=True, help="why the protocol changes, in a sentence")
     p = sub.add_parser("lock", help="record the installed skills and judge settings (install.sh runs this)")
     p.add_argument("workspace", type=Path)
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -1432,9 +1655,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                               "no_record_pmids": report["no_record"][:50]}, indent=1))
         elif args.cmd == "export":
             print(json.dumps(cmd_export(rv, args.allow_pending, args.include_table_only), indent=1))
+        elif args.cmd == "register":
+            print(json.dumps(cmd_register(rv, args.reason), indent=1))
+        elif args.cmd == "amend":
+            print(json.dumps(cmd_amend(rv, args.reason), indent=1))
         elif args.cmd == "status":
             status = cmd_status(rv)
             print(json.dumps(status, indent=1))
+            if not status["protocol"].get("matches_live", False):
+                print(f"WARNING: protocol: {status['protocol']}", file=sys.stderr)
             if status["package"]["lock"] == "drift":
                 print("WARNING: installed skills or judge settings differ from the workspace lock: "
                       f"{status['package']}", file=sys.stderr)

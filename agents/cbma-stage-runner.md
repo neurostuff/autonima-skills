@@ -53,6 +53,10 @@ string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-l
 
    It stops at a time budget (9 minutes by default) so that it fits one command.
    - **Exit code 3:** work remains. Run the same command again, until it exits 0.
+   - **Exit code 1 with a `ledger_error` about the protocol:** the protocol is not
+     registered, or changed since it was. Stop and report it as a PROBLEM. Never run
+     `register` or `amend`, and never touch `protocol/`: the orchestrator settles it
+     with the user.
    - **Exit code 4:** another live process already holds this stage — usually an earlier
      runner's script, which keeps running after its agent stopped. Do not work around it
      and do not start a second loop: report the `stage_busy` record (its host and pid) and
@@ -113,7 +117,7 @@ string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-l
   context.
 - **Keep your context small.** Read the summaries the scripts print, not whole
   decision files, except for the audit sample.
-- **Do not change the protocol, the skills or the scripts.** If a script misbehaves,
+- **Do not change the protocol, the skills, the judge settings or the scripts.** If a script misbehaves,
   or a criterion looks ambiguous, report it; the orchestrator decides with the user.
 
 ## Report

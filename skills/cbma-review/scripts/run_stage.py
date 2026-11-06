@@ -10,7 +10,8 @@ output format for unchanged validation.
 
 Each judge's reasoning effort is the `effort:` line of its agent definition, read from the
 workspace's `.claude/agents/` (beside the review folder) when it has one, and otherwise
-from the package's own `agents/`.
+from the package's own `agents/`. Efforts and the judge setting files are part of the
+registered protocol: the ledger refuses to batch or ingest while they differ from it.
 
 The script is resumable, and it stops at --time-budget seconds. It stops launching
 judges well before then and waits for those running, so a caller whose commands time
@@ -59,12 +60,10 @@ import ledger  # noqa: E402
 import single_response  # noqa: E402
 import stage_bookkeeping as bookkeeping  # noqa: E402
 
-JUDGE = {"abstract": "cbma-abstract-screener", "fulltext": "cbma-fulltext-screener",
-         "extraction": "cbma-extractor", "selection": "cbma-selector"}
+JUDGE = ledger.JUDGES
 SIZE = {"abstract": 25, "fulltext": 2, "extraction": 1, "selection": 1}
 # The CLI each harness runs, and the name its decisions are recorded under.
 HARNESS = {"claude": "claude-code", "codex": "codex-cli"}
-PACKAGE_AGENTS = Path(ledger.SKILLS_ROOT).parent / "agents"
 
 
 def judge_thinking_budget(agents_dir: Path, model: str, stage: str) -> Optional[int]:
@@ -82,14 +81,9 @@ def judge_thinking_budget(agents_dir: Path, model: str, stage: str) -> Optional[
     return budget
 
 
-def agent_effort(agents_dir: Path, judge: str) -> str:
-    m = re.search(r"^effort:\s*(\S+)", (agents_dir / f"{judge}.md").read_text(), re.M)
-    return m.group(1) if m else "default"
-
-
 def judge_one(batch: Path, stage: str, args, skills: Path, timeout=None) -> dict:
     started = time.monotonic()
-    effort = agent_effort(args.agents_dir, JUDGE[stage])
+    effort = ledger.judge_effort(args.review_dir, stage)
     directory = single_response.new_attempt(batch, args.harness, args.model, effort)
     recovery = None
     timeout = timeout if timeout is not None else args.judge_timeout
@@ -202,9 +196,6 @@ def main(argv=None) -> int:
     ap.add_argument("--max-attempts", type=int, default=3, help="persistent attempts per unchanged item")
     ap.add_argument("--time-budget", type=int, default=540, help="seconds before this call returns")
     ap.add_argument("--judge-timeout", type=int, default=900)
-    ap.add_argument("--agents-dir", type=Path, default=None,
-                    help="judge definitions (default: the workspace's .claude/agents, beside the review "
-                         "folder, else the package's agents/)")
     ap.add_argument("--harness", choices=list(HARNESS), default="claude", help="which CLI judges the batches")
     ap.add_argument("--cli", help="the harness's CLI command (default: claude or codex; a wrapper that "
                                   "forwards its arguments works, and tests pass a fake)")
@@ -212,13 +203,8 @@ def main(argv=None) -> int:
     if os.environ.get("CBMA_BATCH_JUDGE") == "1":
         ap.error("a batch judge cannot start a stage runner")
     args.cli = args.cli or args.harness
-    if args.agents_dir is None:
-        # The workspace's own settings, wherever the runner is started from. Relative to the current
-        # directory, a call made elsewhere lost the judges' effort and thinking budgets.
-        here = Path(".claude/agents")
-        beside = args.review_dir.resolve().parent / ".claude" / "agents"
-        args.agents_dir = next((d for d in (beside, here) if (d / f"{JUDGE[args.stage]}.md").is_file()),
-                               PACKAGE_AGENTS)
+    # The workspace's own settings, beside the review folder, wherever the runner is started from.
+    args.agents_dir = args.review_dir.resolve().parent / ".claude" / "agents"
     if any(n <= 0 for n in (args.size or SIZE[args.stage], args.parallel, args.rounds,
                             args.max_attempts, args.time_budget, args.judge_timeout)) or (
                             args.limit is not None and args.limit <= 0):
@@ -233,7 +219,7 @@ def main(argv=None) -> int:
     review = args.review_dir.resolve()
     skills = Path(ledger.SKILLS_ROOT)
     judge = JUDGE[args.stage]
-    effort = agent_effort(args.agents_dir, judge)
+    effort = ledger.judge_effort(review, args.stage)
     agent = f"{HARNESS[args.harness]}/{args.model}/effort-{effort}"
     if args.max_thinking_tokens is not None:
         agent += f"/thinking-budget-{args.max_thinking_tokens}"

@@ -38,15 +38,18 @@ this file's directory). `REVIEW` means the review folder, the one with
    mark it excluded to make progress.
 3. **Unavailable is not excluded.** A study with no retrievable full text is reported
    as unavailable. It is never counted as a full-text exclusion.
-4. **Criteria come from `review.yaml` only.** If screening shows a criterion is
-   ambiguous, stop and propose the edit to the user. Do not reinterpret it silently.
-   Once `review.yaml` or a stage skill is edited, the ledger re-opens the affected
-   decisions automatically.
-5. **Record who judged.** The stage runner records every decision with its harness,
+4. **Criteria come from the registered protocol only.** If screening shows a criterion
+   is ambiguous, stop and propose the edit to the user. Do not reinterpret it silently.
+   Once a change is registered, the ledger re-opens exactly the decisions it affects.
+5. **Never amend the protocol yourself.** After the first judgment, a change to
+   `review.yaml`, a stage skill or a judge setting is an amendment, and only the user
+   can make one, in their own terminal (see Registration). Never run `amend`, never
+   simulate a terminal for it, and never edit or delete `REVIEW/protocol/`.
+6. **Record who judged.** The stage runner records every decision with its harness,
    model, effort and transport, for example
    `claude-code/claude-opus-5-5/effort-low/single-response-v2`. In the fallback,
    pass the same to `ingest --agent`, with your real identifiers.
-6. **Keep state on disk, not in your context.** After any interruption or context
+7. **Keep state on disk, not in your context.** After any interruption or context
    compaction, run `LEDGER status REVIEW` and continue from what it reports.
 
 ## Setup
@@ -60,6 +63,36 @@ If `REVIEW/review.yaml` does not exist, write it with the user first. The format
 in `references/review-spec.md`, and `references/example-review.yaml` is a starting
 point. `init` rejects unknown keys, so a typo fails loudly. Show the user the
 numbered criteria that `init` prints before spending any effort on screening.
+
+## Registration
+
+Nothing is judged under an unregistered protocol. When the user confirms the numbered
+criteria, register them:
+
+```bash
+LEDGER register REVIEW
+```
+
+A protocol version (`REVIEW/protocol/v001.json`, then `v002.json`, ...) records
+`review.yaml`, the stage criteria and skills, and the judges' effort and settings, each
+version chained to the one before by hash. Batching, ingesting and exporting refuse to
+run while any of these differ from the latest version. The refusal says what to do:
+
+- **Nothing judged yet:** revising the protocol is free. When the user confirms the
+  change, run `LEDGER register REVIEW` again; it records the next version.
+- **Anything judged, a pilot included:** the change is an amendment. Stop, show the
+  user the change, and ask them to run, in their own terminal:
+
+  ```bash
+  python SKILLS/cbma-review/scripts/ledger.py amend REVIEW --reason "<why, in a sentence>"
+  ```
+
+  It shows them the difference and the decisions it will re-open, and asks them to
+  confirm by typing. It refuses to run without a terminal, so it cannot run from your
+  shell. Or revert the change.
+
+`LEDGER status REVIEW` reports the version in force, its amendments and what each
+version judged, and the export carries the same record.
 
 ## Running a judged stage
 
@@ -94,6 +127,8 @@ Then do the stage's audit (below) yourself.
   (9 minutes by default) so that it fits one shell command.
 - **4:** another live process holds the stage, usually an earlier runner's script.
   Do not start a second loop; report the `stage_busy` record and stop.
+- **1 with a `ledger_error` about the protocol:** the protocol is not registered, or
+  has changed since. Follow Registration.
 - **`usage_limited` true:** the provider refused a call (usage, session or rate
   limit). Dispatch stops; report it, and run again after the limit resets. A refused
   call does not use up an item's attempts.
@@ -105,7 +140,8 @@ Then do the stage's audit (below) yourself.
   CLI did not report is counted as unknown, never as zero.
 
 **Judges' effort** is the `effort:` line of each judge's definition: the workspace's
-`.claude/agents/<judge>.md` if it has one, otherwise the package's `agents/`.
+`.claude/agents/<judge>.md` if it has one, otherwise the package's `agents/`. Efforts
+and the `judge_*.json` settings files in `.claude/agents` are part of the protocol.
 
 | Stage | Judge | Effort | Batch size |
 |---|---|---|---|
@@ -114,8 +150,8 @@ Then do the stage's audit (below) yourself.
 | extraction | `cbma-extractor` | low | 1 |
 | selection | `cbma-selector` | medium | 1 |
 
-Change an effort only with the user, before the stage. Every decision records the
-effort it was made with.
+Changing an effort is a protocol change (see Registration). Every decision records
+the effort it was made with.
 
 **Pilots.** `--limit N` batches at most N items, and the pilot keeps that scope: its
 retries never expand into unscreened records.
@@ -198,6 +234,7 @@ items remain pending or unavailable, and list the files under `results/`.
 
 ```
 review.yaml                 the protocol (criteria, sources, targets)
+protocol/v001.json ...      registered protocol versions (append-only; the ledger writes these)
 search/records.jsonl        one record per PMID; search/search_log.json
 fulltext/index.jsonl        retrieval outcome per PMID; fulltext/raw/ cached downloads
 docs/<pmid>/                normalized text.md, tables/<id>.json, meta.json
