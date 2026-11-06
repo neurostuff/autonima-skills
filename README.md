@@ -38,7 +38,8 @@ pip install pyyaml            # every stage; add nimare for the meta-analysis st
 - **Lock:** records every installed file in `.autonima-skills.lock`. `ledger.py status`
   compares against it and names any skill, script or judge setting edited since.
 
-**Network:** outbound access to `eutils.ncbi.nlm.nih.gov` for search and PMC.
+**Network:** outbound access to `eutils.ncbi.nlm.nih.gov` for search and PMC, and to
+`neurostore.org` when a review uses NeuroStore.
 
 ## Use
 
@@ -75,6 +76,7 @@ with `--harness codex`.
 |---|---|
 | [`cbma-review`](skills/cbma-review/SKILL.md) | orchestrator: stage order, rules, audit checklist; holds the ledger and the stage runner |
 | [`pubmed-search`](skills/pubmed-search/SKILL.md) | complete, de-duplicated PubMed search via E-utilities |
+| [`neurostore`](skills/neurostore/SKILL.md) | NeuroStore as the search index and as the source of extracted coordinates |
 | [`fulltext-sources`](skills/fulltext-sources/SKILL.md) | PMC open access plus any local folders of pre-downloaded articles |
 | [`screen-studies`](skills/screen-studies/SKILL.md) | abstract and full-text screening against numbered criteria |
 | [`screen-and-select`](skills/screen-and-select/SKILL.md) | full-text screening and analysis selection in one pass (records mode) |
@@ -137,4 +139,5 @@ Under active development. Next steps:
 - **Lower token use per stage.**
 - **Criteria drafting:** a skill that helps you write `review.yaml`.
 - **A review page** for checking decisions.
-- **Neurosynth Compose mode:** search and coordinates from NeuroStore.
+- **Neurosynth Compose mode:** NeuroStore search and coordinates work today (the
+  `neurostore` skill); next is reading Compose projects and pushing results back.

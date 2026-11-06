@@ -15,11 +15,11 @@ stage has its own skill with the detailed instructions:
 
 | Stage | Skill | Who does it |
 |---|---|---|
-| 1. Search | `pubmed-search` | a script |
+| 1. Search | `pubmed-search` (with `neurostore` first, when NeuroStore is the index) | scripts |
 | 2. Abstract screening | `screen-studies` | judges, in batches |
 | 3. Full-text retrieval | `fulltext-sources` | a script (PMC, then any local folders) |
 | 4. Full-text screening | `screen-studies` | judges, in batches |
-| 5. Coordinate extraction | `extract-coordinates` | judges, one study per batch |
+| 5. Coordinate extraction | `extract-coordinates`, or `neurostore` records | judges, one study per batch; or a script |
 | 6. Analysis selection | `select-analyses` | judges, one study per batch |
 | 7. Meta-analysis | `cbma-nimare` | a script (NiMARE) |
 
@@ -179,7 +179,9 @@ pilot the user asked for. Otherwise, after each stage:
 
 1. **Search:** follow `pubmed-search`. When it finishes, run `LEDGER status REVIEW` and
    report the record count. It must equal PubMed's reported count, and the script
-   fails if it does not.
+   fails if it does not. **With `search.neurostore`,** first run the `neurostore`
+   skill's `search`, which finds the candidates; `pubmed-search` then fetches their
+   records. Report NeuroStore's count and any base studies without a PMID.
 2. **Abstract screening:** run the `abstract` stage. Records without an abstract are
    screened on title and metadata; the `screen-studies` skill covers this.
 3. **Full-text retrieval:** first run `LEDGER needs-fulltext REVIEW`, then follow
@@ -187,7 +189,8 @@ pilot the user asked for. Otherwise, after each stage:
 4. **Full-text screening:** run the `fulltext` stage. Items whose text is
    unavailable are never batched.
    **Combined mode** (`screening.fulltext.select_analyses: true`, records mode only):
-   run `LEDGER import-analyses` *before* this stage. The full-text judges then decide
+   run `LEDGER import-analyses` *before* this stage (with `extraction.neurostore`,
+   run the `neurostore` skill's `records` first). The full-text judges then decide
    screening and selection together, following the `screen-and-select` skill. An
    included study with no eligible analysis is recorded as excluded. The selection
    stage afterwards has nothing pending.
@@ -195,9 +198,10 @@ pilot the user asked for. Otherwise, after each stage:
    every parsed table (captions, headers and footnotes included) and the paper's
    Methods and coordinate-space paragraphs. A judge that reports `context_needed`
    gets the full paper once, within the same retry limit. In records mode
-   (`extraction.records` is set in `review.yaml`) there is nothing to judge: run
-   `LEDGER import-analyses REVIEW --agent <records source>` instead, and report its
-   counts, including studies with no record, which stay pending.
+   (`extraction.records` or `extraction.neurostore` is set in `review.yaml`) there is
+   nothing to judge: with `extraction.neurostore`, run the `neurostore` skill's
+   `records`; then run `LEDGER import-analyses REVIEW` instead of the stage, and report
+   its counts, including studies with no record, which stay pending.
 6. **Selection:** run the `selection` stage. Judges receive the full article and the
    extracted analyses, and must decide every analysis × target pair. Skip the stage
    if `review.yaml` defines no targets.

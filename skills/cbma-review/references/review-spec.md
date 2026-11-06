@@ -15,6 +15,11 @@ search:
   pmids: ["12345678"]           # optional; unioned with the query results
   pmids_file: seeds.txt         # optional; one PMID per line, relative to the review folder
   email: you@example.org        # recommended; NCBI asks tools to identify a contact
+  # neurostore:                 # instead of `query`: NeuroStore finds the candidates (neurostore skill)
+  #   query: '"working memory" AND schizophrenia'
+  #   search_full_text: false
+  #   data_type: coordinate
+  #   snapshot: null
 
 screening:
   abstract:                     # permissive: exclude only when the abstract clearly fails
@@ -52,6 +57,7 @@ extraction:
   drop_unverified: true         # default true: export only points found in their table row
   instructions: ""              # optional, appended to the extraction skill
   records: /data/pondie/records # optional: records mode, see below
+  # neurostore: {}              # instead of `records`: NeuroStore's extracted analyses (neurostore skill)
 
 selection:                      # analysis-level selection for each meta-analytic target
   global:                       # apply to every target; become GI1.., GE1..
@@ -105,8 +111,8 @@ over 1,802 documents from five reviews).
 
 ## Records mode
 
-Pre-extracted records (for example Pondie's) can stand in for full text and for
-extraction:
+Pre-extracted records (for example Pondie's, or NeuroStore's with
+`extraction.neurostore`) can stand in for full text and for extraction:
 - **Full text:** add the records' text files as a `local` source with `format: text`.
   Full-text screening then reads the record.
 - **Extraction:** set `extraction.records` to the folder of `<pmid>.analyses.json`

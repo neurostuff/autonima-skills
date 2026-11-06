@@ -158,16 +158,33 @@ FULLTEXT_VIEWS = {"full", "trimmed"}
 
 _ALLOWED = {
     "": {"name", "objective", "search", "screening", "fulltext", "extraction", "selection", "meta", "notes"},
-    "search": {"query", "date_from", "date_to", "pmids", "pmids_file", "email"},
+    "search": {"query", "date_from", "date_to", "pmids", "pmids_file", "email", "neurostore"},
+    "search.neurostore": {"query", "search_full_text", "data_type", "snapshot", "base_url"},
     "screening": {"abstract", "fulltext"},
     "screening.stage": {"inclusion", "exclusion", "instructions", "select_analyses", "objective", "text"},
     "fulltext": {"sources"},
-    "extraction": {"drop_unverified", "instructions", "records"},
+    "extraction": {"drop_unverified", "instructions", "records", "neurostore"},
+    "extraction.neurostore": {"sources", "roles", "snapshot"},
     "selection": {"global", "targets", "instructions"},
     "selection.global": {"inclusion", "exclusion"},
     "selection.target": {"name", "description", "inclusion", "exclusion", "instructions"},
     "meta": {"estimator", "corrector", "estimator_args", "corrector_args"},
 }
+
+
+# NeuroStore versions an analysis can come from, and the roles it gives analyses (see the neurostore skill).
+NEUROSTORE_SOURCES = ("study_schema", "nuextract-v21", "llm", "neurostore", "pubget", "nuextract-v19", "neuroquery",
+                      "neurosynth")
+NEUROSTORE_ROLES = ("result", "anchor", "localization", "reference", "other")
+
+
+def records_source(spec: dict) -> Optional[str]:
+    """The folder of pre-extracted records that stands in for judged extraction, or None. With
+    extraction.neurostore it is the one neurostore.py writes in the review folder."""
+    ext = spec.get("extraction") or {}
+    if "neurostore" in ext:
+        return "neurostore/records"
+    return ext.get("records")
 
 
 def _check_keys(obj: dict, allowed_key: str, where: str) -> None:
@@ -186,8 +203,18 @@ def validate_spec(spec: dict) -> None:
         raise LedgerError("review.yaml needs an objective")
     _check_keys(spec.get("search") or {}, "search", "search")
     search = spec.get("search") or {}
-    if not (search.get("query") or search.get("pmids") or search.get("pmids_file")):
-        raise LedgerError("search needs a query, pmids or pmids_file")
+    if not (search.get("query") or search.get("pmids") or search.get("pmids_file") or "neurostore" in search):
+        raise LedgerError("search needs a query, pmids, pmids_file or neurostore")
+    if "neurostore" in search:
+        ns = search["neurostore"] or {}
+        _check_keys(ns, "search.neurostore", "search.neurostore")
+        if search.get("query"):
+            raise LedgerError("search.query is a PubMed query, and with search.neurostore the candidates come from "
+                              "NeuroStore: put the NeuroStore query in search.neurostore.query")
+        if not ns.get("query"):
+            raise LedgerError("search.neurostore needs a query, in NeuroStore's syntax")
+        if ns.get("data_type", "coordinate") not in ("coordinate", "image", "both", None):
+            raise LedgerError("search.neurostore.data_type must be coordinate, image, both or null")
     screening = spec.get("screening") or {}
     _check_keys(screening, "screening", "screening")
     for stage in ("abstract", "fulltext"):
@@ -204,11 +231,21 @@ def validate_spec(spec: dict) -> None:
     if (screening.get("abstract") or {}).get("select_analyses"):
         raise LedgerError("select_analyses belongs to screening.fulltext, not screening.abstract")
     ft = screening.get("fulltext") or {}
-    if ft.get("select_analyses") and not (spec.get("extraction") or {}).get("records"):
-        raise LedgerError("screening.fulltext.select_analyses needs extraction.records: the analyses must "
-                          "exist before full-text screening")
+    if ft.get("select_analyses") and not records_source(spec):
+        raise LedgerError("screening.fulltext.select_analyses needs extraction.records or extraction.neurostore: "
+                          "the analyses must exist before full-text screening")
     _check_keys(spec.get("fulltext") or {}, "fulltext", "fulltext")
     _check_keys(spec.get("extraction") or {}, "extraction", "extraction")
+    ext = spec.get("extraction") or {}
+    if "neurostore" in ext:
+        ns = ext["neurostore"] or {}
+        _check_keys(ns, "extraction.neurostore", "extraction.neurostore")
+        if ext.get("records"):
+            raise LedgerError("extraction.records and extraction.neurostore both name the analyses' source; keep one")
+        for key, known in (("sources", NEUROSTORE_SOURCES), ("roles", NEUROSTORE_ROLES)):
+            unknown = set(ns.get(key) or []) - set(known)
+            if unknown:
+                raise LedgerError(f"extraction.neurostore.{key}: unknown {sorted(unknown)} (known: {list(known)})")
     selection = spec.get("selection") or {}
     _check_keys(selection, "selection", "selection")
     _check_keys(selection.get("global") or {}, "selection.global", "selection.global")
@@ -250,6 +287,8 @@ def stage_criteria(spec: dict, stage: str) -> dict:
         # Only when set, so reviews that extract with judges keep their hashes.
         if ext.get("records"):
             payload["records"] = ext["records"]
+        if "neurostore" in ext:
+            payload["neurostore"] = ext["neurostore"] or {}
     elif stage == "selection":
         sel = spec.get("selection") or {}
         glob = sel.get("global") or {}
@@ -1084,13 +1123,14 @@ def cmd_import_analyses(rv: Review, agent: str) -> dict:
     is left out, as a judged extraction would leave it out. A study with no record file
     stays pending, and is reported.
     """
-    records = (rv.spec.get("extraction") or {}).get("records")
+    records = records_source(rv.spec)
     if not records:
-        raise LedgerError("review.yaml sets no extraction.records folder")
+        raise LedgerError("review.yaml sets no extraction.records folder or extraction.neurostore")
     folder = Path(records).expanduser()
     folder = folder if folder.is_absolute() else rv.root / folder
     if not folder.is_dir():
-        raise LedgerError(f"extraction.records folder {folder} does not exist")
+        hint = "; run `neurostore.py records REVIEW` first" if "neurostore" in (rv.spec.get("extraction") or {}) else ""
+        raise LedgerError(f"extraction.records folder {folder} does not exist{hint}")
     version = require_protocol(rv)
     report = {"imported": 0, "with_analyses": 0, "analyses": 0, "points": 0, "space_from_analysis": 0,
               "space_unknown": 0, "no_record": []}
@@ -1603,7 +1643,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                    help="also export points verified only somewhere in the table, not within one row")
     p = sub.add_parser("import-analyses", help="records mode: analyses from pre-extracted records")
     p.add_argument("review_dir", type=Path)
-    p.add_argument("--agent", default="records", help="what produced the records, e.g. pondie")
+    p.add_argument("--agent", help="what produced the records, e.g. pondie (default: neurostore with "
+                                   "extraction.neurostore, else records)")
     p = sub.add_parser("ingest")
     p.add_argument("review_dir", type=Path)
     p.add_argument("--stage", choices=STAGES, required=True)
@@ -1650,7 +1691,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             path.write_text("".join(f"{p}\n" for p in passed))
             print(f"{len(passed)} PMIDs passed abstract screening -> {path}")
         elif args.cmd == "import-analyses":
-            report = cmd_import_analyses(rv, args.agent)
+            agent = args.agent or ("neurostore" if "neurostore" in (rv.spec.get("extraction") or {}) else "records")
+            report = cmd_import_analyses(rv, agent)
             print(json.dumps({**report, "no_record": len(report["no_record"]),
                               "no_record_pmids": report["no_record"][:50]}, indent=1))
         elif args.cmd == "export":
