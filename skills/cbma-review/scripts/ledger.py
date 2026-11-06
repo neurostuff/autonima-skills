@@ -208,11 +208,11 @@ def validate_spec(spec: dict) -> None:
     if "neurostore" in search:
         ns = search["neurostore"] or {}
         _check_keys(ns, "search.neurostore", "search.neurostore")
-        if search.get("query"):
-            raise LedgerError("search.query is a PubMed query, and with search.neurostore the candidates come from "
-                              "NeuroStore: put the NeuroStore query in search.neurostore.query")
-        if not ns.get("query"):
-            raise LedgerError("search.neurostore needs a query, in NeuroStore's syntax")
+        # One query: the PubMed query, which neurostore.py translates as autonima does, or one written
+        # in NeuroStore's syntax. Both would leave unclear which one ran.
+        if bool(search.get("query")) == bool(ns.get("query")):
+            raise LedgerError("with search.neurostore, give one query: search.query (a PubMed query, translated "
+                              "for NeuroStore) or search.neurostore.query (NeuroStore's syntax), not both or neither")
         if ns.get("data_type", "coordinate") not in ("coordinate", "image", "both", None):
             raise LedgerError("search.neurostore.data_type must be coordinate, image, both or null")
     screening = spec.get("screening") or {}

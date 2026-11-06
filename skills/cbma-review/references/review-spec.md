@@ -15,8 +15,8 @@ search:
   pmids: ["12345678"]           # optional; unioned with the query results
   pmids_file: seeds.txt         # optional; one PMID per line, relative to the review folder
   email: you@example.org        # recommended; NCBI asks tools to identify a contact
-  # neurostore:                 # instead of `query`: NeuroStore finds the candidates (neurostore skill)
-  #   query: '"working memory" AND schizophrenia'
+  # neurostore:                 # NeuroStore finds the candidates (neurostore skill); `query` above is
+  #                             # translated for it, or give neurostore.query in NeuroStore's syntax instead
   #   search_full_text: false
   #   data_type: coordinate
   #   snapshot: null

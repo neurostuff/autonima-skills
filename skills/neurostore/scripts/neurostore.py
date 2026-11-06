@@ -4,7 +4,10 @@
     python neurostore.py records REVIEW    # extraction.neurostore -> neurostore/records/<pmid>.analyses.json
 
 `search` runs the review's NeuroStore query (titles and abstracts, or full text), checks that
-every result was retrieved, and writes the PMIDs. The PubMed script then fetches their records,
+every result was retrieved, and writes the PMIDs. The query is search.neurostore.query as written,
+or the review's PubMed query (search.query) translated exactly as autonima translates it
+(translate.py). In a full-text search, a translated query's top-level NOT clauses are kept to
+titles and abstracts, as PubMed scoped them. The PubMed script then fetches their records,
 so every later stage reads the same records as a PubMed search would give it. With
 `search.neurostore.snapshot`, the PMIDs come from an earlier search's log instead, which must
 have run the same query: a frozen search for comparisons.
@@ -32,7 +35,10 @@ import urllib.parse
 import urllib.request
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import translate  # noqa: E402
 
 API = "https://neurostore.org/api"
 # Compose's current parse first, then earlier extractions by how closely they recovered
@@ -137,21 +143,42 @@ def _year(date: Optional[str]) -> Optional[int]:
 # search
 # --------------------------------------------------------------------------- #
 
-def search_params(spec: dict) -> dict:
+def resolve_query(spec: dict) -> Tuple[str, Optional["translate.Translation"]]:
+    """The NeuroStore query to send, and the translation it came from, if any: search.neurostore.query
+    as written, or search.query, a PubMed query, translated."""
+    search = spec.get("search") or {}
+    cfg = search.get("neurostore") or {}
+    if cfg.get("query"):
+        return cfg["query"], None
+    if not search.get("query"):
+        raise NeuroStoreError("search.neurostore needs a query: search.query (PubMed, translated) or "
+                              "search.neurostore.query (NeuroStore's syntax)")
+    try:
+        translation = translate.translate_pubmed_query(search["query"])
+    except translate.QueryTranslationError as exc:
+        raise NeuroStoreError(f"search.query cannot be translated for NeuroStore: {exc}") from exc
+    return translation.query, translation
+
+
+def search_params(spec: dict, query: str) -> dict:
     """What defines the search; a snapshot must have been made with the same."""
     search = spec.get("search") or {}
     cfg = search.get("neurostore") or {}
-    return {"query": cfg.get("query"), "search_full_text": bool(cfg.get("search_full_text", False)),
+    return {"query": query, "search_full_text": bool(cfg.get("search_full_text", False)),
             "data_type": cfg.get("data_type", "coordinate"), "year_min": _year(search.get("date_from")),
             "year_max": _year(search.get("date_to"))}
 
 
 def cmd_search(review: Path, client: Optional[Client] = None) -> dict:
     spec = load_spec(review)
-    cfg = (spec.get("search") or {}).get("neurostore")
-    if not cfg:
+    if "neurostore" not in (spec.get("search") or {}):
         raise NeuroStoreError("review.yaml sets no search.neurostore")
-    params = search_params(spec)
+    cfg = spec["search"]["neurostore"] or {}
+    query, translation = resolve_query(spec)
+    params = search_params(spec, query)
+    translated = None if translation is None else {
+        "pubmed_query": spec["search"]["query"], "dropped": translation.dropped,
+        "approximated": translation.approximated, "include": translation.include, "exclude": translation.exclude}
     if cfg.get("snapshot"):
         source = _resolve(review, cfg["snapshot"])
         frozen = json.loads(source.read_text())
@@ -162,11 +189,23 @@ def cmd_search(review: Path, client: Optional[Client] = None) -> dict:
                                      "searched_at": frozen.get("searched_at")}, loaded_at=now())
     else:
         client = client or Client(cfg.get("base_url", API))
-        results, total = client.search(params["query"], params["search_full_text"], params["data_type"],
-                                       params["year_min"], params["year_max"])
+        filters = (params["data_type"], params["year_min"], params["year_max"])
+        if params["search_full_text"] and translation is not None and translation.exclude:
+            # NeuroStore applies NOT to every field it searches, so PubMed's `NOT review[tiab]` sent as
+            # written would drop every paper whose text mentions a review. Search the rest in full
+            # text, and remove what a title-and-abstract search of each NOT clause finds.
+            results, total = client.search(translation.include, True, *filters)
+            excluded = set()
+            for clause in translation.exclude:
+                excluded |= {r.get("id") for r in client.search(clause, False, *filters)[0]}
+            translated.update(exclude_scope="title_abstract", matched_before_exclusion=len(results),
+                              removed_by_exclusion=sum(r.get("id") in excluded for r in results))
+            results = [r for r in results if r.get("id") not in excluded]
+        else:
+            results, total = client.search(params["query"], params["search_full_text"], *filters)
         pmids = sorted({str(r["pmid"]) for r in results if r.get("pmid")}, key=int)
-        log = {"params": params, "base_url": client.base_url, "searched_at": now(), "reported_total": total,
-               "base_studies": len(results), "pmids": pmids,
+        log = {"params": params, "translation": translated, "base_url": client.base_url, "searched_at": now(),
+               "reported_total": total, "base_studies": len(results), "pmids": pmids,
                # The rest of the review is keyed on PMIDs, so these cannot be carried.
                "without_pmid": [{"id": r.get("id"), "name": r.get("name"), "doi": r.get("doi")}
                                 for r in results if not r.get("pmid")],
@@ -175,8 +214,12 @@ def cmd_search(review: Path, client: Optional[Client] = None) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     (out / "neurostore_search_log.json").write_text(json.dumps(log, indent=1))
     (out / "neurostore_pmids.txt").write_text("".join(f"{p}\n" for p in log["pmids"]))
-    return {"pmids": len(log["pmids"]), "without_pmid": len(log.get("without_pmid", [])),
-            "frozen": bool(cfg.get("snapshot")), "written": str(out / "neurostore_pmids.txt")}
+    report = {"pmids": len(log["pmids"]), "without_pmid": len(log.get("without_pmid", [])),
+              "frozen": bool(cfg.get("snapshot")), "written": str(out / "neurostore_pmids.txt")}
+    if translation is not None:
+        # The agent shows these to the user: what the PubMed query lost on the way to NeuroStore.
+        report.update(neurostore_query=query, dropped=translation.dropped, approximated=translation.approximated)
+    return report
 
 
 # --------------------------------------------------------------------------- #

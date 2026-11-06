@@ -28,27 +28,44 @@ snapshot.
 
 ```yaml
 search:
+  query: '("emotion regulation"[tiab] OR reappraisal*[tiab]) AND fMRI[tiab]'   # PubMed, translated
   date_from: 2000/01/01          # NeuroStore filters by year
   date_to: 2019/12/31
   neurostore:
-    query: '("emotion regulation" OR reappraisal) AND (fMRI OR "functional MRI")'
+    # query: '...'               # instead of search.query: a query in NeuroStore's own syntax
     search_full_text: false      # true: match the article text too, not only title and abstract
     data_type: coordinate        # coordinate (default) | image | both | null for every study
     snapshot: null               # an earlier search log to reuse instead of searching
 ```
 
-`search.query` must be absent: it is a PubMed query, and here the candidates come from
-NeuroStore. `search.pmids` and `pmids_file` still add seed studies.
+Give one query, not both:
 
-**Writing the query.** NeuroStore's syntax is not PubMed's. Write it with the user:
-- it matches whole words after stemming (`regulation` also finds `regulating`);
-- quoted phrases, `AND`, `OR`, `NOT`, `-` and parentheses work;
-- there are no field tags (`[tiab]`), no MeSH and no truncation (`reactiv*`): list the
-  word forms you need.
+- **`search.query`, a PubMed query.** The script translates it exactly as autonima does
+  (`scripts/translate.py` is autonima's translator, unchanged), so both send NeuroStore
+  the same query for the same review. What PubMed expresses and NeuroStore cannot is
+  reported, never dropped silently:
+  - **text tags** (`[tiab]`) are removed;
+  - **MeSH** inside an `OR` becomes the heading as a phrase; MeSH `AND`-ed on
+    (`AND Humans[mh]`) is dropped;
+  - **publication type, language and date tags** are dropped (dates come from
+    `date_from` and `date_to`);
+  - **truncation** (`reactiv*`) becomes the prefix with common endings.
 
-With `search_full_text: true`, `NOT` applies to the article text too, so
-`NOT review` drops every paper that mentions a review. Keep `NOT` clauses out of
-full-text queries, and let abstract screening exclude reviews.
+  `search` prints the query it sent, and what was `dropped` and `approximated`. Show
+  them to the user.
+- **`search.neurostore.query`, NeuroStore's own syntax.** It is sent as written:
+  - whole words after stemming (`regulation` also finds `regulating`);
+  - quoted phrases, `AND`, `OR`, `NOT`, `-` and parentheses;
+  - no field tags, no MeSH and no truncation: list the word forms you need.
+
+**`NOT` in a full-text search.** NeuroStore applies `NOT` to every field it searches,
+so `NOT review` would drop every paper whose text mentions a review. For a translated
+PubMed query, the script keeps the top-level `NOT` clauses to titles and abstracts, as
+PubMed scoped them: it searches the rest in full text and removes what a
+title-and-abstract search of each `NOT` clause finds. A native query is sent as
+written, so keep `NOT` out of a native full-text query.
+
+`search.pmids` and `pmids_file` still add seed studies.
 
 **Then** run `pubmed-search` as usual. It reads `search/neurostore_pmids.txt` instead
 of running a PubMed query, and fetches each candidate's PubMed record, so the later

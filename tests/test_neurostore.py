@@ -232,8 +232,8 @@ def test_the_ledger_imports_neurostore_records(review, api):
 
 
 @pytest.mark.parametrize("change, message", [
-    ("search:\n  query: q\n  neurostore: {query: x}", "search.query is a PubMed query"),
-    ("search:\n  neurostore: {}", "needs a query"),
+    ("search:\n  query: q\n  neurostore: {query: x}", "not both or neither"),
+    ("search:\n  neurostore: {}", "not both or neither"),
     ("search:\n  neurostore: {query: x, full_text: true}", "unknown key"),
     ("search: {query: q}\nextraction:\n  records: r\n  neurostore: {}", "keep one"),
     ("search: {query: q}\nextraction:\n  neurostore: {sources: [study_schema, pubmed]}", "unknown ['pubmed']"),
@@ -245,3 +245,66 @@ def test_the_ledger_rejects_unclear_neurostore_settings(tmp_path, change, messag
                                     "  fulltext: {inclusion: [W]}\n")
     with pytest.raises(ledger.LedgerError, match=message.replace("[", r"\[").replace("]", r"\]")):
         ledger.Review(rv)
+
+
+TRANSLATED_YAML = REVIEW_YAML.replace("""  neurostore:
+    query: '"emotion regulation" AND fMRI'""", """  query: '("emotion regulation"[tiab] OR reappraisal*[tiab]) AND Humans[mh] NOT review[tiab]'
+  neurostore: {}""")
+
+
+class QueryAPI(FakeAPI):
+    """Answers each search by its query and scope, to check what was sent."""
+
+    def __init__(self, answers):
+        super().__init__()
+        self.answers = answers
+
+    def __call__(self, url):
+        parsed = urllib.parse.urlparse(url)
+        q = dict(urllib.parse.parse_qsl(parsed.query))
+        self.calls.append((parsed.path, q))
+        rows = [{"id": f"bs{p}", "pmid": p} for p in self.answers[(q["search"], q["search_full_text"])]]
+        return json.dumps({"metadata": {"total_count": len(rows)}, "results": rows}).encode()
+
+
+def test_a_pubmed_query_is_translated_as_autonima_translates_it(review, monkeypatch):
+    sent = '("emotion regulation" OR (reappraisal OR reappraisale OR reappraisaly OR reappraisalion OR ' \
+           'reappraisality OR reappraisalsis OR reappraisalic)) NOT review'
+    api = QueryAPI({(sent, "false"): PMIDS[:2]})
+    monkeypatch.setattr(ns.Client, "_open", lambda self, url: api(url))
+    (review / "review.yaml").write_text(TRANSLATED_YAML)
+    out = ns.cmd_search(review, ns.Client())
+    assert out["pmids"] == 2 and out["neurostore_query"] == sent
+    assert out["dropped"] == ["Humans[mh]"] and out["approximated"] == ["reappraisal*[tiab]"]
+    log = json.loads((review / "search" / "neurostore_search_log.json").read_text())
+    assert log["params"]["query"] == sent and log["translation"]["exclude"] == ["review"]
+
+
+def test_full_text_keeps_not_clauses_to_titles_and_abstracts(review, monkeypatch):
+    """NeuroStore applies NOT to the whole text, which would drop every paper that cites a review."""
+    include = '"emotion regulation" OR (reappraisal OR reappraisale OR reappraisaly OR reappraisalion OR ' \
+              'reappraisality OR reappraisalsis OR reappraisalic)'
+    api = QueryAPI({(include, "true"): PMIDS, ("review", "false"): ["22222222"]})
+    monkeypatch.setattr(ns.Client, "_open", lambda self, url: api(url))
+    (review / "review.yaml").write_text(TRANSLATED_YAML.replace("  neurostore: {}",
+                                                                "  neurostore: {search_full_text: true}"))
+    out = ns.cmd_search(review, ns.Client())
+    assert (review / "search" / "neurostore_pmids.txt").read_text().split() == ["11111111", "33333333"]
+    log = json.loads((review / "search" / "neurostore_search_log.json").read_text())["translation"]
+    assert log["exclude_scope"] == "title_abstract" and log["removed_by_exclusion"] == 1
+    assert {(q["search"], q["search_full_text"]) for _, q in api.calls} == {(include, "true"), ("review", "false")}
+    assert out["pmids"] == 2
+
+
+def test_the_pubmed_script_never_runs_a_translated_query_on_pubmed(review, monkeypatch):
+    (review / "review.yaml").write_text(TRANSLATED_YAML)
+    (review / "search").mkdir()
+    (review / "search" / "neurostore_pmids.txt").write_text("11111111\n")
+    seen = {}
+
+    def fake_run(review_dir, query, pmids, date_from, date_to, email, client=None, neurostore_pmids=None):
+        seen.update(query=query, neurostore_pmids=neurostore_pmids)
+        return {"missing_from_efetch": []}
+    monkeypatch.setattr(pubmed, "run", fake_run)
+    assert quiet(pubmed.main, [str(review)]) == 0
+    assert seen == {"query": None, "neurostore_pmids": ["11111111"]}

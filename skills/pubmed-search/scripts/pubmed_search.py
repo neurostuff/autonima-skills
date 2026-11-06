@@ -357,6 +357,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         pmids += read_pmids(Path(pmids_file))
     neurostore_pmids = None
     if "neurostore" in spec:
+        # search.query is then the query NeuroStore ran, translated; PubMed only supplies records.
+        query = args.query
         found = args.review_dir / "search" / "neurostore_pmids.txt"
         if not found.exists():
             ap.error("search.neurostore is set: run `neurostore.py search REVIEW` first")
