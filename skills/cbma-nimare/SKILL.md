@@ -31,12 +31,14 @@ description: Export a review's verified, selected coordinates as a NiMADS studys
      `--corrector`.
    - **Small targets:** targets with fewer than `--min-studies` studies (default
      10) are skipped, and the reason is recorded.
-   - **Unknown coordinate space:** points exported with no space need a stated
-     policy: `--unknown-space mni` (the default) fits them as MNI, and
-     `--unknown-space exclude` leaves their analyses out. `review.yaml`
-     `meta: unknown_space:` sets the default. Each `summary.json` records the
-     policy and the analyses and points it affected. (Without it, NiMARE silently
-     treats unknown spaces as MNI.)
+   - **Unknown coordinate space:** points with no stated space are fitted as MNI.
+     This is the default; do not ask the user about it, and do not add it to
+     `review.yaml`. Each `summary.json` records how many analyses and points it
+     covered; report those counts with the results. A review that sets
+     `meta: unknown_space: exclude` leaves those analyses out instead, and
+     `--unknown-space exclude` does the same for one run, for a sensitivity check
+     the user asks for. (NiMARE on its own also fits them as MNI, with only a log
+     warning; the script states it.)
    - **Outputs:** maps go to `REVIEW/results/meta/<target>/`, with a
      `summary.json` per target and one overall.
 

@@ -210,6 +210,15 @@ def test_spec_rejects_typos(review):
     assert run_ledger("init", review) == 1
 
 
+def test_meta_unknown_space_is_a_spec_key_defaulting_to_mni(review):
+    text = (review / "review.yaml").read_text()
+    assert "unknown_space" not in text                                   # left out: run_meta fits MNI
+    assert run_ledger("init", review) == 0
+    for value, code in (("exclude", 0), ("mni", 0), ("guess", 1)):
+        (review / "review.yaml").write_text(text + f"meta:\n  unknown_space: {value}\n")
+        assert run_ledger("init", review) == code, value
+
+
 def test_target_instructions_are_guidance_that_reaches_the_hash(review):
     # A review without target instructions keeps the hash it had before the key existed.
     before = ledger.Review(review).criteria

@@ -168,7 +168,7 @@ _ALLOWED = {
     "selection": {"global", "targets", "instructions"},
     "selection.global": {"inclusion", "exclusion"},
     "selection.target": {"name", "description", "inclusion", "exclusion", "instructions"},
-    "meta": {"estimator", "corrector", "estimator_args", "corrector_args"},
+    "meta": {"estimator", "corrector", "estimator_args", "corrector_args", "unknown_space"},
 }
 
 
@@ -258,6 +258,8 @@ def validate_spec(spec: dict) -> None:
             raise LedgerError(f"duplicate target name {t['name']}")
         names.add(t["name"])
     _check_keys(spec.get("meta") or {}, "meta", "meta")
+    if (spec.get("meta") or {}).get("unknown_space", "mni") not in ("mni", "exclude"):
+        raise LedgerError("meta.unknown_space must be mni (the default) or exclude")
 
 
 def number(inclusion: List[str], exclusion: List[str], prefix: str = "") -> Dict[str, str]:

@@ -81,7 +81,14 @@ meta:
   corrector: fdr                # fdr | montecarlo | bonferroni
   estimator_args: {}
   corrector_args: {}
+  unknown_space: mni            # mni (default) | exclude
 ```
+
+`meta.unknown_space` covers points whose paper never states a coordinate space. The
+default fits them as MNI, as NiMARE and autonima do. `exclude` leaves every analysis
+with such a point out of the fit. Leave the key out to take the default. Like every
+`review.yaml` key, it is part of the registered protocol, so changing it after the
+first judgment is an amendment.
 
 ## Trimmed full text
 
