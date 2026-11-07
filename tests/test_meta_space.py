@@ -41,3 +41,11 @@ def test_exclude_drops_analyses_with_any_unknown_point():
 def test_an_unknown_policy_is_refused():
     with pytest.raises(ValueError):
         run_meta.apply_unknown_space(studyset(), ["s1-a1"], "guess")
+
+
+def test_only_analyses_keeps_exactly_the_selected_ones():
+    data = run_meta.only_analyses(studyset(), ["s1-a2", "s2-a1"])
+    assert [(s["id"], [a["id"] for a in s["analyses"]]) for s in data["studies"]] == \
+        [("s1", ["s1-a2"]), ("s2", ["s2-a1"])]
+    assert run_meta.only_analyses(studyset(), ["s1-a1"])["studies"][0]["id"] == "s1"
+    assert len(run_meta.only_analyses(studyset(), ["s1-a1"])["studies"]) == 1      # empty studies dropped
