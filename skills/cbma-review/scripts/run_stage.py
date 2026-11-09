@@ -1,6 +1,6 @@
 """Run one judged stage mechanically: batches, one headless judge per batch, ingest, retries.
 
-    python run_stage.py REVIEW --stage fulltext --model claude-opus-5-5 \\
+    python run_stage.py REVIEW --stage fulltext --model claude-sonnet-5-5 \\
         [--harness claude|codex] [--size 2] [--limit N] [--parallel 8] [--time-budget 540]
 
 Each batch is judged by a fresh tool-free session of the harness's CLI: `claude -p`, or
@@ -184,11 +184,18 @@ def take_lock(work: Path, stage: str) -> Tuple[Path, Optional[dict]]:
     raise StageBusy(stale)                                  # unreachable: the loop returns or raises
 
 
+# The judges' default model in Claude Code: a judge reads one batch and returns one JSON
+# response, and Sonnet does that well at a fraction of Opus's cost. The orchestrator's own model
+# is never the default: the emotion regulation pilot ran every judge on Opus, unasked.
+DEFAULT_CLAUDE_JUDGE = "claude-sonnet-5-5"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("review_dir", type=Path)
     ap.add_argument("--stage", choices=list(JUDGE), required=True)
-    ap.add_argument("--model", required=True, help="the judges' model id, recorded with every decision")
+    ap.add_argument("--model", help="the judges' model id, recorded with every decision (default for "
+                                    f"--harness claude: {DEFAULT_CLAUDE_JUDGE}; required for codex)")
     ap.add_argument("--size", type=int)
     ap.add_argument("--limit", type=int, help="batch at most this many items in the first round (pilots)")
     ap.add_argument("--parallel", type=int, default=8)
@@ -200,6 +207,10 @@ def main(argv=None) -> int:
     ap.add_argument("--cli", help="the harness's CLI command (default: claude or codex; a wrapper that "
                                   "forwards its arguments works, and tests pass a fake)")
     args = ap.parse_args(argv)
+    if not args.model:
+        if args.harness != "claude":
+            ap.error("--model is required with --harness codex")
+        args.model = DEFAULT_CLAUDE_JUDGE
     if os.environ.get("CBMA_BATCH_JUDGE") == "1":
         ap.error("a batch judge cannot start a stage runner")
     args.cli = args.cli or args.harness

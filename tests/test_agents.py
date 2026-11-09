@@ -41,7 +41,7 @@ def test_judges_cannot_start_subagents_and_runner_names_them():
 
 
 def test_install_copies_the_agents(tmp_path):
-    subprocess.run(["bash", str(ROOT / "install.sh"), str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(["bash", str(ROOT / "install.sh"), str(tmp_path), "--no-env"], check=True, capture_output=True)
     installed = {p.name for p in (tmp_path / ".claude" / "agents").glob("*.md")}
     assert installed == {p.name for p in AGENTS.glob("*.md")}
     assert not any(p.is_symlink() for p in (tmp_path / ".claude" / "agents").iterdir())
@@ -72,8 +72,11 @@ def test_status_reports_edits_made_after_install(tmp_path):
     review.mkdir(parents=True)
     (review / "review.yaml").write_text("objective: t\nsearch: {query: q}\nscreening:\n"
                                         "  abstract: {inclusion: [H]}\n  fulltext: {inclusion: [W]}\n")
-    subprocess.run(["bash", str(pkg / "install.sh"), str(ws)], check=True, capture_output=True)
+    subprocess.run(["bash", str(pkg / "install.sh"), str(ws), "--no-env"], check=True, capture_output=True)
     lock = json.loads((ws / ".autonima-skills.lock").read_text())
+    assert lock["python"]
+    deny = json.loads((ws / ".claude" / "settings.json").read_text())["permissions"]["deny"]
+    assert f"Edit(/{pkg}/skills/**)" in deny and "Edit(.claude/skills/**)" in deny
     assert "skills/cbma-review/scripts/run_stage.py" in lock["files"]
     assert "agents/cbma-selector.md" in lock["files"] and lock["package"] == str(pkg)
     assert status_package(pkg, review)["lock"] == "ok"

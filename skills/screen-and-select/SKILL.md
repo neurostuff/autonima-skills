@@ -26,7 +26,10 @@ batch and your output combine them.
 ## For each study
 
 1. **Screen it** exactly as at the full-text stage: give every screening criterion a
-   state, decide `include`, `exclude` or `incomplete`, and quote your evidence.
+   state, decide `include`, `exclude` or `incomplete`, and quote your evidence. A
+   results table that the text cites and describes, but that is not in the file, is
+   evidence that the result exists. A missing table is never on its own a reason to
+   exclude, or to return `incomplete`.
 2. **If it is `include`,** judge every analysis against every target, exactly as in
    selection: every global and target criterion gets a state, and `include` is true or
    false.

@@ -17,8 +17,8 @@ Full text is still needed for full-text screening and selection, because NeuroSt
 not share it: retrieval is unchanged (`fulltext-sources`, including local folders).
 
 ```bash
-python SKILLS/neurostore/scripts/neurostore.py search  REVIEW
-python SKILLS/neurostore/scripts/neurostore.py records REVIEW
+PYTHON SKILLS/neurostore/scripts/neurostore.py search  REVIEW
+PYTHON SKILLS/neurostore/scripts/neurostore.py records REVIEW
 ```
 
 Both scripts need network access to `neurostore.org`, unless the setting names a

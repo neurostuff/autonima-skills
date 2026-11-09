@@ -25,7 +25,8 @@ stage has its own skill with the detailed instructions:
 
 `SKILLS` below means the directory that holds these skill folders (the parent of
 this file's directory). `REVIEW` means the review folder, the one with
-`review.yaml`. `LEDGER` means `python SKILLS/cbma-review/scripts/ledger.py`.
+`review.yaml`. `PYTHON` means the workspace's interpreter (see Setup and planning), and
+`LEDGER` means `PYTHON SKILLS/cbma-review/scripts/ledger.py`.
 
 ## Non-negotiable rules
 
@@ -47,22 +48,125 @@ this file's directory). `REVIEW` means the review folder, the one with
    simulate a terminal for it, and never edit or delete `REVIEW/protocol/`.
 6. **Record who judged.** The stage runner records every decision with its harness,
    model, effort and transport, for example
-   `claude-code/claude-opus-5-5/effort-low/single-response-v2`. In the fallback,
+   `claude-code/claude-sonnet-5-5/effort-low/single-response-v2`. In the fallback,
    pass the same to `ingest --agent`, with your real identifiers.
 7. **Keep state on disk, not in your context.** After any interruption or context
    compaction, run `LEDGER status REVIEW` and continue from what it reports.
+8. **Never edit the package.** Change nothing under `SKILLS/` or `.claude/agents/`,
+   with any tool, shell commands included. They are links into the autonima-skills
+   package, so an edit changes every review that uses it; `install.sh` also denies
+   these edits. When a script fails, stop, quote the error to the user, and say it
+   needs a fix in the package. Do not work around it with a patched copy.
+9. **No improvised analysis code.** Do not write scripts that change what is judged,
+   selected, merged or fitted. If the skills cannot do what the user wants, say so and
+   stop: the change belongs in the package, where it is tested and registered.
+   Read-only checks, such as counting, comparing or reading a paper, are fine.
+10. **One decision per question.** See "Asking the user" below.
 
-## Setup
+## Asking the user
 
-```bash
-pip install pyyaml            # the only dependency until the meta-analysis stage
-LEDGER init REVIEW
-```
+There are two kinds of question, and they are asked differently.
 
-If `REVIEW/review.yaml` does not exist, write it with the user first. The format is
-in `references/review-spec.md`, and `references/example-review.yaml` is a starting
-point. `init` rejects unknown keys, so a typo fails loudly. Show the user the
-numbered criteria that `init` prints before spending any effort on screening.
+**Planning: few questions, then a draft.** Before `review.yaml` exists, ask only the
+questions that define the review:
+- **where the studies, coordinates and texts come from** (step 1 below);
+- **the judges' model** (step 2);
+- **the review question and population, and the targets** (step 3).
+
+That is at most about eight questions. Use AskUserQuestion, which takes up to four
+related questions per call. Everything else goes into the draft with its recommended
+default, for example cue modality, age limits, imaging methods, the trimmed text view,
+the estimator and the corrector. Show those defaults as one short list the user can
+change in a single reply. Don't ask about each one.
+
+**Decisions during the review: one per question.** A problem a stage runner raises, a
+change to the protocol, or anything that changes which studies, analyses or maps
+result:
+- **One decision per question.** In Claude Code, ask with AskUserQuestion; otherwise
+  ask one numbered question per message. Never put several such decisions in one
+  message to be answered in a line.
+- **Each option states its scope in numbers:** how many studies and analyses it
+  touches. It also says whether it is recorded in the protocol (an amendment) or not,
+  and names any conflict with the protocol's own instructions.
+- **Recommendation first,** with the reason.
+- **Say it back before acting** when the chosen option reaches beyond the problem
+  raised. Give one line on what will happen, for example "this merges the analyses of
+  9 studies, including 2 with separate patient and control groups", and wait for a
+  yes.
+- **Settled defaults are not decisions.** Don't ask about them. For example, points
+  with no stated coordinate space are fitted as MNI (`cbma-nimare`); report the
+  count instead.
+
+## Setup and planning
+
+**Python.** Run every script with the workspace's interpreter, `PYTHON` below: the
+`python` named in the workspace's `.autonima-skills.lock`. `install.sh` builds that
+environment (`.venv`) from the package's lockfile. Never install packages into the
+system Python, and never run `pip install` without asking the user.
+
+If `REVIEW/review.yaml` exists, run `LEDGER init REVIEW` and continue from
+`LEDGER status REVIEW`. Otherwise plan the review with the user, in this order:
+
+1. **Where the studies, coordinates and texts come from.** These choices set most of
+   a review's cost, so they come first.
+   - **Search index.**
+     - **NeuroStore (recommended):** searches the papers NeuroStore has indexed. On
+       the benchmark's queries it returned about 2.7 times fewer records than PubMed.
+       Its recall of the benchmark's included studies was 0.71, against PubMed's
+       0.85. Its candidates mostly have coordinates already.
+     - **PubMed:** covers the whole literature, but every extra candidate needs its
+       full text fetched. Always offer it; never hide it.
+   - **Coordinates.**
+     - **NeuroStore's pre-extracted analyses** (`extraction.neurostore`): the default
+       with a NeuroStore search. There is no extraction stage to pay for.
+     - **Judges extract them from each paper's tables:** one judge per study, and it
+       needs full text with tables.
+   - **Full text** (`fulltext.sources`). Full-text screening always needs it,
+     whatever the coordinate source.
+     - **PMC open access, plus local folders.** Ask whether the user has folders of
+       downloaded publisher HTML or XML.
+     - **Say plainly what PMC alone covers,** which is often a minority of candidates.
+       In the emotion regulation pilot, PMC gave usable text for 148 of 298
+       candidates. Of the 64 benchmark-included studies the search found, 45 had no
+       usable PMC text.
+2. **The judges' model.** Ask which model the judges use, and recommend
+   `claude-sonnet-5-5` for every stage in Claude Code (`run_stage.py`'s default).
+   - **Never default to your own model.** A judge reads one batch and returns one JSON
+     response; a larger model mostly adds cost.
+   - **Keep the answer for the whole review.** It is the model in `AGENT` for every
+     stage. Decisions record their model, so a review that switches midway mixes
+     judges.
+   - **With Codex,** ask for a model id; there is no default.
+3. **Scope:** the question, the population, and the meta-analytic targets. For each
+   target, give one or two concrete example contrasts it would include and one it would
+   not, so the user can correct the definition on examples rather than on words.
+   Settle the remaining choices as defaults in the draft (see Asking the user).
+4. **Draft `review.yaml`.** The format is in `references/review-spec.md`, and
+   `references/example-review.yaml` is a starting point.
+   - Run `LEDGER init REVIEW`. It rejects unknown keys, so a typo fails loudly.
+   - Run `LEDGER check REVIEW`. Fix what it reports before going on, for example a
+     missing package, or a judge CLI that is not logged in (the user runs
+     `claude auth login` in a terminal).
+5. **Search, then check it against known studies.** Run the search (stage 1 below),
+   then ask the user for 5 to 10 studies they know belong in the review, from their
+   own reading:
+
+   ```bash
+   PYTHON SKILLS/pubmed-search/scripts/check_known.py REVIEW --pmids <pmid> ...
+   ```
+
+   For each study the search missed, it gives the reason and the study's title,
+   keywords and MeSH terms.
+   - **Show the user the misses.** For each, propose the query change that would
+     catch it, or say why none is reasonable, for example when NeuroStore does not
+     index the study.
+   - **Re-run the search on their answer.** Nothing is judged yet, so revising is
+     free.
+   - **Use studies the user names.** Do not take the full included list of a
+     published review they are trying to reproduce: that puts the answer into the
+     search.
+6. **Show the numbered criteria** that `init` prints, and register them
+   (Registration, below).
 
 ## Registration
 
@@ -81,10 +185,11 @@ run while any of these differ from the latest version. The refusal says what to 
 - **Nothing judged yet:** revising the protocol is free. When the user confirms the
   change, run `LEDGER register REVIEW` again; it records the next version.
 - **Anything judged, a pilot included:** the change is an amendment. Stop, show the
-  user the change, and ask them to run, in their own terminal:
+  user the change, and ask them to run, in their own terminal, with the real paths
+  filled in so they can paste it:
 
   ```bash
-  python SKILLS/cbma-review/scripts/ledger.py amend REVIEW --reason "<why, in a sentence>"
+  PYTHON SKILLS/cbma-review/scripts/ledger.py amend REVIEW --reason "<why, in a sentence>"
   ```
 
   It shows them the difference and the decisions it will re-open, and asks them to
@@ -109,13 +214,16 @@ stage to one `cbma-stage-runner` subagent, with this prompt, values filled in:
 > Run the `<stage>` stage. REVIEW=`<abs path>` SKILLS=`<abs path>` PYTHON=`<python>`
 > AGENT=`<harness>/<model id>`. [Batch size `<n>`.] [Pilot: `--limit <N>`.]
 
+`<model id>` is the judges' model chosen in planning: `claude-sonnet-5-5` unless the
+user chose another. It is never your own model by default.
+
 The runner runs the script, audits the stage, and returns a short report, so your
 context grows by one report per stage.
 
 **Codex, or no subagents: run the script yourself.**
 
 ```bash
-python SKILLS/cbma-review/scripts/run_stage.py REVIEW --stage <stage> --model <model id> \
+PYTHON SKILLS/cbma-review/scripts/run_stage.py REVIEW --stage <stage> --model <model id> \
     --harness codex [--size <n>] [--limit N]
 ```
 

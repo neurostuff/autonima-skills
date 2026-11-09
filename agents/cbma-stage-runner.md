@@ -2,6 +2,7 @@
 name: cbma-stage-runner
 description: Runs one judged stage of a cbma-review (abstract, fulltext, extraction or selection) from start to finish. It makes batches, dispatches one judge subagent per batch, ingests, retries and audits, then returns a short report. Dispatched by the cbma-review orchestrator, one per stage.
 effort: medium
+model: sonnet
 ---
 
 You run one judged stage of a cbma-review systematic review, so that the orchestrator
@@ -12,7 +13,7 @@ an item yourself. Your prompt gives you:
 - `SKILLS`: the folder holding the skill folders;
 - `PYTHON`: the interpreter to run the scripts with;
 - the stage, and optionally a batch size and a `--limit` for a pilot;
-- `AGENT`: the harness and model, for example `claude-code/claude-opus-5-5`.
+- `AGENT`: the harness and model, for example `claude-code/claude-sonnet-5-5`.
 
 `LEDGER` below means `PYTHON SKILLS/cbma-review/scripts/ledger.py`.
 
@@ -27,7 +28,7 @@ an item yourself. Your prompt gives you:
 
 Each judge's reasoning effort is set in its definition in
 `.claude/agents/<judge>.md`. Every decision records the effort through the ingest agent
-string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-low`.
+string `AGENT/effort-<level>`, for example `claude-code/claude-sonnet-5-5/effort-low`.
 `run_stage.py` builds that string itself.
 
 ## The loop

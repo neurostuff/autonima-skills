@@ -112,13 +112,28 @@ def norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-EVIDENCE_CHECK = 2
+EVIDENCE_CHECK = 3
 CLOSE_MATCH = 0.6
 
 
 def _word_pairs(s: str) -> set:
     w = re.findall(r"[a-z0-9]+", norm_text(s))
     return set(zip(w, w[1:]))
+
+
+def evidence_text(doc_dir: Path, text_file: Optional[str] = None) -> str:
+    """What a full-text quote may come from: the text the judge read, plus every parsed table's
+    label, caption, footer and cells. Judges quote table captions and footers as evidence, and
+    those live in docs/<pmid>/tables/*.json, not text.md (16 "ungrounded" decisions in the
+    emotion regulation pilot were verbatim captions). Check 3."""
+    parts = [Path(text_file or doc_dir / "text.md").read_text(encoding="utf-8")]
+    for t in sorted((doc_dir / "tables").glob("*.json")) if (doc_dir / "tables").exists() else []:
+        try:
+            table = json.loads(t.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        parts += [str(table.get(k) or "") for k in ("label", "caption", "footer", "tsv")]
+    return "\n".join(parts)
 
 
 def evidence_match(quote: str, haystack: str, text_pairs: set) -> str:
@@ -986,7 +1001,7 @@ def cmd_ingest(rv: Review, stage: str, agent: str) -> dict:
                     report["errors"].append(f"{batch['batch_id']}: pmid {pmid} appears twice; first kept")
                     continue
                 seen.add(pmid)
-                text = Path(items[pmid]["text_file"]).read_text() if stage == "fulltext" else None
+                text = evidence_text(rv.doc_dir(pmid), items[pmid]["text_file"]) if stage == "fulltext" else None
                 errs, flags = validate_screening(rec, stage, ids, text)
                 if batch["_input_hashes"][pmid] != rv.input_hash(stage, pmid):
                     errs.append(f"pmid {pmid}: the input changed after the batch was made")
@@ -1228,8 +1243,10 @@ def cmd_lock(workspace: Path) -> dict:
     """Record the installed files, so that status can show any later edit to them."""
     import subprocess
     files = installed_files(workspace)
+    # The interpreter that ran the lock is the one the review's scripts run with: install.sh
+    # runs this with the workspace's environment (.venv), built from the package's uv.lock.
     lock = {"package": str(SKILLS_ROOT.parent), "locked_at": now(), "sha256": _files_sha(files), "git": None,
-            "files": files}
+            "python": sys.executable, "files": files}
     def git(*args):
         return subprocess.run(["git", "-C", str(SKILLS_ROOT.parent), *args], capture_output=True, text=True,
                               check=True).stdout.strip()
@@ -1239,6 +1256,66 @@ def cmd_lock(workspace: Path) -> dict:
         pass                                            # not a git checkout: the file hashes still hold
     write_json(workspace / LOCK_NAME, lock)
     return {k: v for k, v in lock.items() if k != "files"} | {"files": len(files)}
+
+
+def cmd_check(rv: "Review", harness: str = "claude") -> dict:
+    """Before registration: can everything this review.yaml will need be imported and run?
+
+    A missing package should surface while planning, not halfway through retrieval or at the
+    meta-analysis. Checks the interpreter against the workspace lock, the Elsevier parser when a
+    source declares `format: elsevier`, NiMARE when there are selection targets, and the judges'
+    CLI and its login (judges run `claude -p` with the CLI's own login, not the session's)."""
+    import importlib
+    import shutil
+    import subprocess
+    checks: List[dict] = []
+
+    def add(name: str, ok: bool, detail: str, required: bool = True) -> None:
+        checks.append({"check": name, "ok": bool(ok), "required": required, "detail": detail})
+
+    lock_path = rv.root.parent / LOCK_NAME
+    locked = json.loads(lock_path.read_text()).get("python") if lock_path.exists() else None
+    if locked:
+        add("python", Path(locked) == Path(sys.executable),
+            f"running {sys.executable}" if Path(locked) == Path(sys.executable)
+            else f"running {sys.executable}; run the scripts with the workspace's {locked}")
+    else:
+        add("python", True, "the workspace lock names no interpreter; re-run install.sh to build the "
+                            "workspace environment from uv.lock", required=False)
+
+    def importable(*modules: str) -> Optional[str]:
+        for m in modules:
+            try:
+                importlib.import_module(m)
+            except Exception as exc:  # noqa: BLE001 - any import failure means "not usable"
+                return f"{m}: {type(exc).__name__}: {exc}"
+        return None
+
+    sources = (rv.spec.get("fulltext") or {}).get("sources") or []
+    if any(isinstance(s, dict) and s.get("format") == "elsevier" for s in sources):
+        err = importable("elsevier_coordinate_extraction.extract.text",
+                         "elsevier_coordinate_extraction.table_extraction")
+        add("elsevier_parser", err is None, err or "importable",)
+    if (rv.spec.get("selection") or {}).get("targets"):
+        err = importable("nimare")
+        if err is None:
+            import nimare  # type: ignore
+            add("nimare", True, f"nimare {getattr(nimare, '__version__', '?')}")
+        else:
+            add("nimare", False, err)
+    cli = {"claude": "claude", "codex": "codex"}[harness]
+    if not shutil.which(cli):
+        add("judge_cli", False, f"`{cli}` is not on PATH; judges run as `{cli}` sessions")
+    elif harness == "claude":
+        try:
+            ok = subprocess.run([cli, "auth", "status"], capture_output=True, timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
+        add("judge_cli", ok, "logged in" if ok else
+            "the claude CLI is not logged in; the user runs `claude auth login` in a terminal")
+    else:
+        add("judge_cli", True, f"`{cli}` found")
+    return {"ok": all(c["ok"] for c in checks if c["required"]), "checks": checks}
 
 
 def package_drift(workspace: Path) -> dict:
@@ -1251,7 +1328,8 @@ def package_drift(workspace: Path) -> dict:
     lock = json.loads(path.read_text())
     old, new = lock.get("files", {}), installed_files(workspace)
     report = {"lock": "ok", "sha256": lock.get("sha256", "")[:16], "locked_at": lock.get("locked_at"),
-              **({"git_commit": lock["git"]["commit"][:12]} if lock.get("git") else {})}
+              **({"git_commit": lock["git"]["commit"][:12]} if lock.get("git") else {}),
+              **({"python": lock["python"]} if lock.get("python") else {})}
     if lock.get("package") != str(SKILLS_ROOT.parent):
         # Informational: a moved or re-cloned package with the same files is the same package.
         report["package_moved"] = {"locked": lock.get("package"), "running": str(SKILLS_ROOT.parent)}
@@ -1485,7 +1563,7 @@ def cmd_status(rv: Review) -> dict:
             # mean the same for old and new decisions.
             text_path = rv.doc_dir(r["pmid"]) / "text.md"
             if text_path.exists():
-                text = text_path.read_text(encoding="utf-8")
+                text = evidence_text(rv.doc_dir(r["pmid"]))
                 hay, tp = norm_text(text), _word_pairs(text)
                 m = [evidence_match(e.get("quote", ""), hay, tp) for e in r.get("evidence") or [] if isinstance(e, dict)]
                 r = dict(r, ungrounded_evidence=[1 for x in m if x == "none"], inexact_evidence=[1 for x in m if x == "close"])
@@ -1627,6 +1705,9 @@ def cmd_export(rv: Review, allow_pending: bool, include_table_only: bool) -> dic
 def main(argv: Optional[Iterable[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("check", help="before registering: are this review's dependencies and judge CLI usable?")
+    p.add_argument("review_dir", type=Path)
+    p.add_argument("--harness", choices=("claude", "codex"), default="claude")
     for name in ("init", "needs-fulltext", "status"):
         p = sub.add_parser(name)
         p.add_argument("review_dir", type=Path)
@@ -1678,6 +1759,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                             **({"targets": target_ids} if s == "selection" else {})} for s in STAGES})
             print(json.dumps({**shown, "targets": target_ids}, indent=1))
             print("review.yaml is valid; criteria IDs written to results/criteria.json", file=sys.stderr)
+        elif args.cmd == "check":
+            report = cmd_check(rv, args.harness)
+            print(json.dumps(report, indent=1))
+            return 0 if report["ok"] else 1
         elif args.cmd == "batches":
             paths = cmd_batches(rv, args.stage, args.size, args.limit, args.discard)
             print(json.dumps({"stage": args.stage, "batches": [str(p) for p in paths],

@@ -1,0 +1,346 @@
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.16.0
+    # via httpx
+certifi==2026.10.23
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
+charset-normalizer==3.5.2
+    # via requests
+cloudpickle==3.1.2
+    # via joblib
+cognitiveatlas==0.1.11
+    # via nimare
+colorama==0.4.6 ; sys_platform == 'win32'
+    # via tqdm
+contourpy==1.3.2 ; python_full_version < '3.11'
+    # via matplotlib
+contourpy==1.3.3 ; python_full_version == '3.11.*'
+    # via matplotlib
+contourpy==1.4.0 ; python_full_version >= '3.12'
+    # via matplotlib
+cycler==0.12.1
+    # via matplotlib
+elsevier-coordinate-extraction @ git+https://github.com/neurostuff/elsevier_coordinate_extractor@d30f0fee779cff491aaf639e88a1b74f8d4050a1
+exceptiongroup==1.3.1 ; python_full_version < '3.11'
+    # via anyio
+fonttools==4.65.0 ; python_full_version < '3.11'
+    # via matplotlib
+fonttools==4.68.0 ; python_full_version >= '3.11'
+    # via matplotlib
+formulaic==1.2.2
+    # via statsmodels
+fuzzywuzzy==0.18.0
+    # via nimare
+h11==0.16.0
+    # via httpcore
+h2==4.4.1
+    # via httpx
+hpack==4.2.0
+    # via h2
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via elsevier-coordinate-extraction
+hyperframe==6.1.0
+    # via h2
+idna==3.20
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+importlib-resources==7.1.0 ; python_full_version < '3.12'
+    # via nibabel
+interface-meta==2.0.1
+    # via formulaic
+jinja2==3.1.6
+    # via
+    #   nilearn
+    #   nimare
+joblib==1.6.0
+    # via
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+    #   scikit-learn
+kiwisolver==1.5.1
+    # via matplotlib
+lazy-imports==1.2.0
+    # via neurostore-sdk
+llvmlite==0.50.0
+    # via numba
+lxml==6.1.3
+    # via
+    #   elsevier-coordinate-extraction
+    #   neuroquery
+    #   pubget
+markupsafe==3.0.4
+    # via jinja2
+matplotlib==3.10.9 ; python_full_version < '3.11'
+    # via nimare
+matplotlib==3.11.2 ; python_full_version >= '3.11'
+    # via nimare
+mpmath==1.3.0
+    # via sympy
+narwhals==2.28.0
+    # via
+    #   formulaic
+    #   plotly
+    #   scikit-learn
+neuroquery==1.1.0
+    # via pubget
+neurostore-sdk==1.2
+    # via nimare
+nibabel==5.4.2 ; python_full_version < '3.11'
+    # via
+    #   nilearn
+    #   nimare
+nibabel==5.5.0 ; python_full_version >= '3.11'
+    # via
+    #   nilearn
+    #   nimare
+nilearn==0.13.1
+    # via
+    #   neuroquery
+    #   nimare
+nimare==0.21.0
+numba==0.68.1
+    # via
+    #   nimare
+    #   sparse
+numpy==2.2.6 ; python_full_version < '3.11'
+    # via
+    #   cognitiveatlas
+    #   contourpy
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   matplotlib
+    #   neuroquery
+    #   nibabel
+    #   nilearn
+    #   nimare
+    #   numba
+    #   pandas
+    #   patsy
+    #   pubget
+    #   pymare
+    #   ridgeplot
+    #   scikit-learn
+    #   scipy
+    #   sparse
+    #   statsmodels
+numpy==2.4.6 ; python_full_version == '3.11.*'
+    # via
+    #   cognitiveatlas
+    #   contourpy
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   matplotlib
+    #   neuroquery
+    #   nibabel
+    #   nilearn
+    #   nimare
+    #   numba
+    #   pandas
+    #   patsy
+    #   pubget
+    #   pymare
+    #   ridgeplot
+    #   scikit-learn
+    #   scipy
+    #   sparse
+    #   statsmodels
+numpy==2.5.4 ; python_full_version >= '3.12'
+    # via
+    #   cognitiveatlas
+    #   contourpy
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   matplotlib
+    #   neuroquery
+    #   nibabel
+    #   nilearn
+    #   nimare
+    #   numba
+    #   pandas
+    #   patsy
+    #   pubget
+    #   pymare
+    #   ridgeplot
+    #   scikit-learn
+    #   scipy
+    #   sparse
+    #   statsmodels
+packaging==26.3
+    # via
+    #   matplotlib
+    #   nibabel
+    #   nilearn
+    #   patsy
+    #   plotly
+    #   statsmodels
+pandas==2.3.3 ; python_full_version < '3.11'
+    # via
+    #   cognitiveatlas
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+    #   pymare
+    #   statsmodels
+pandas==3.1.1 ; python_full_version >= '3.11'
+    # via
+    #   cognitiveatlas
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+    #   pymare
+    #   statsmodels
+patsy==1.0.3
+    # via
+    #   nimare
+    #   statsmodels
+pillow==12.3.0 ; python_full_version < '3.11'
+    # via matplotlib
+pillow==13.0.0 ; python_full_version >= '3.11'
+    # via matplotlib
+plotly==7.1.0
+    # via
+    #   nimare
+    #   ridgeplot
+pubget @ git+https://github.com/neuroquery/pubget.git@bf683ba29259b8cfc7f9a256a6ff9f8c634810e0
+    # via elsevier-coordinate-extraction
+pydantic==2.14.3
+    # via neurostore-sdk
+pydantic-core==2.50.4
+    # via pydantic
+pymare==0.0.13
+    # via nimare
+pyparsing==3.3.3
+    # via matplotlib
+python-dateutil==3.0.0 ; python_full_version < '3.11'
+    # via
+    #   matplotlib
+    #   neurostore-sdk
+    #   pandas
+python-dateutil==4.0.0 ; python_full_version >= '3.11'
+    # via
+    #   matplotlib
+    #   neurostore-sdk
+    #   pandas
+python-dotenv==1.2.4
+    # via elsevier-coordinate-extraction
+pytz==2026.6 ; python_full_version < '3.11'
+    # via pandas
+pyyaml==6.0.3
+    # via
+    #   autonima-skills
+    #   nimare
+regex==2026.9.29 ; python_full_version < '3.11'
+    # via neuroquery
+regex==2026.11.9 ; python_full_version >= '3.11'
+    # via neuroquery
+requests==2.34.2
+    # via
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+ridgeplot==0.6.0
+    # via nimare
+scikit-learn==1.7.2 ; python_full_version < '3.11'
+    # via
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+scikit-learn==1.9.1 ; python_full_version >= '3.11'
+    # via
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+scipy==1.15.3 ; python_full_version < '3.11'
+    # via
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+    #   pymare
+    #   scikit-learn
+    #   statsmodels
+scipy==1.17.1 ; python_full_version == '3.11.*'
+    # via
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+    #   pymare
+    #   scikit-learn
+    #   statsmodels
+scipy==1.18.1 ; python_full_version >= '3.12'
+    # via
+    #   elsevier-coordinate-extraction
+    #   formulaic
+    #   neuroquery
+    #   nilearn
+    #   nimare
+    #   pubget
+    #   pymare
+    #   scikit-learn
+    #   statsmodels
+six==1.17.0 ; python_full_version < '3.11'
+    # via python-dateutil
+socksio==1.0.0
+    # via elsevier-coordinate-extraction
+sparse==0.17.0 ; python_full_version < '3.11'
+    # via nimare
+sparse==0.19.3 ; python_full_version >= '3.11'
+    # via nimare
+statsmodels==0.15.0
+    # via
+    #   nimare
+    #   ridgeplot
+sympy==1.14.0
+    # via pymare
+threadpoolctl==3.8.0
+    # via scikit-learn
+tqdm==4.70.1
+    # via
+    #   elsevier-coordinate-extraction
+    #   nimare
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   exceptiongroup
+    #   formulaic
+    #   neurostore-sdk
+    #   nibabel
+    #   pydantic
+    #   pydantic-core
+    #   ridgeplot
+    #   typing-inspection
+typing-inspection==0.4.5
+    # via pydantic
+tzdata==2026.6
+    # via
+    #   pandas
+    #   python-dateutil
+urllib3==2.8.0
+    # via
+    #   neurostore-sdk
+    #   requests
+wrapt==2.5.2
+    # via formulaic

@@ -7,7 +7,7 @@ description: Export a review's verified, selected coordinates as a NiMADS studys
 
 1. **Export** (the ledger refuses while any study is pending):
    ```bash
-   python SKILLS/cbma-review/scripts/ledger.py export REVIEW
+   PYTHON SKILLS/cbma-review/scripts/ledger.py export REVIEW
    ```
    This writes `REVIEW/results/nimads/studyset.json` and `annotation.json`.
    - **What is exported:** only full-text-included studies, and only points
@@ -21,10 +21,9 @@ description: Export a review's verified, selected coordinates as a NiMADS studys
    - **Pending studies:** `--allow-pending` exports only the finished studies.
      Use it only for pilots, and say so in the results.
 
-2. **Run the meta-analyses** (NiMARE is the only heavy dependency):
+2. **Run the meta-analyses** with the workspace's interpreter, which has the pinned NiMARE:
    ```bash
-   pip install nimare
-   python SKILLS/cbma-nimare/scripts/run_meta.py REVIEW
+   PYTHON SKILLS/cbma-nimare/scripts/run_meta.py REVIEW
    ```
    - **Settings:** the estimator and corrector come from `review.yaml` `meta:`
      (defaults: `mkdadensity`, `fdr`). Override them with `--estimator` and

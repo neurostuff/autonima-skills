@@ -611,3 +611,45 @@ def test_a_study_without_parsed_tables_is_recorded_without_a_judge(review, monke
     rec = json.loads((review / "analyses" / f"{without}.json").read_text())
     assert rec["analyses"] == [] and rec["agent"] == "ledger/no-parsed-tables" and rec["input_hash"] == "in"
     assert rec["criteria_hash"] == rv.criteria["extraction"]["hash"]
+
+
+def test_evidence_quotes_may_come_from_table_captions_and_footers(tmp_path):
+    doc = tmp_path / "doc"
+    (doc / "tables").mkdir(parents=True)
+    (doc / "text.md").write_text("Methods. Participants viewed pictures.")
+    (doc / "tables" / "T1.json").write_text(json.dumps(
+        {"label": "Table 1", "caption": "Whole-brain peaks for Reappraise > Look (MNI).",
+         "footer": "FWE-corrected, p < .05.", "tsv": "Region\tx\ty\tz\nIFG\t-46\t28\t-6"}))
+    text = ledger.evidence_text(doc)
+    hay, pairs = ledger.norm_text(text), ledger._word_pairs(text)
+    for quote in ("Whole-brain peaks for Reappraise > Look (MNI).", "FWE-corrected, p < .05.",
+                  "Participants viewed pictures."):
+        assert ledger.evidence_match(quote, hay, pairs) == "exact", quote
+    assert ledger.evidence_match("Coordinates are listed in a supplementary file we never saw.", hay, pairs) == "none"
+
+
+def test_check_reports_what_this_review_needs(tmp_path, monkeypatch):
+    import importlib
+    import shutil
+    import types
+    (tmp_path / "rv").mkdir()
+    (tmp_path / ledger.LOCK_NAME).write_text(json.dumps({"python": "/elsewhere/bin/python"}))
+    rv = types.SimpleNamespace(root=tmp_path / "rv", spec={
+        "fulltext": {"sources": [{"type": "pmc"}, {"type": "local", "format": "elsevier"}]},
+        "selection": {"targets": [{"name": "t"}]}})
+    real = importlib.import_module
+
+    def fake_import(name, *a, **k):
+        if name.startswith("elsevier_coordinate_extraction"):
+            raise ImportError("not installed")
+        return real(name, *a, **k)
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(shutil, "which", lambda cli: None)
+    report = ledger.cmd_check(rv)
+    got = {c["check"]: c for c in report["checks"]}
+    assert not report["ok"]
+    assert not got["python"]["ok"] and "/elsewhere/bin/python" in got["python"]["detail"]
+    assert not got["elsevier_parser"]["ok"] and not got["judge_cli"]["ok"]
+    assert "nimare" in got                                    # targets exist, so the maps need NiMARE
+    rv.spec = {"fulltext": {"sources": [{"type": "pmc"}]}}
+    assert {c["check"] for c in ledger.cmd_check(rv)["checks"]} == {"python", "judge_cli"}

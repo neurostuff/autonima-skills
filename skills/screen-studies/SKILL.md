@@ -62,11 +62,28 @@ decision from those states. The ledger rejects any decision that contradicts the
   chance to show it, so record that criterion as `not_met` and say in the reason
   that it was not demonstrated. `unclear` is still correct for an exclusion
   criterion the text does not address.
+- **Tables cited but not in the file.** Publishers often host tables on separate
+  pages, and supplementary tables are rarely supplied. Eligibility asks whether a
+  qualifying result exists, not whether you hold it. A results table that the text
+  cites and describes counts as evidence for the criteria about reported results,
+  for example "whole-brain peaks for Reappraise > Look are listed in Table 2" or
+  "the whole-brain main effects are in Supplementary Table S1". Record such a
+  criterion `met`, quote the sentence, and say in the reason that the table itself
+  was not supplied.
+  - **What counts:** the text must establish what the missing table reports: which
+    contrast, and that it is whole-brain when a criterion requires that. A bare "see
+    Table 1", with nothing saying what it holds, does not show the criterion, so the
+    usual rule below applies.
+  - **A missing table is never by itself a reason to exclude,** and never a reason
+    for `incomplete`. Other criteria still decide as usual: the wrong task, a
+    reanalysis, or results that the text says are ROI-only.
+  - Coordinates are obtained later, at extraction. A study whose coordinates
+    cannot be found is reported as such, not excluded here.
 - **`incomplete`:** the file is not really the article. Signs:
   - it contains only an abstract, a landing page, a paywall notice, or the
     references;
   - the Methods or Results are missing.
-  If the batch says `text_flagged_incomplete: true`, check this especially
+  A text that lacks only its tables is not incomplete (see above). If the batch says `text_flagged_incomplete: true`, check this especially
   carefully. An incomplete study is not excluded. It goes back to retrieval.
 - **Evidence:** for each criterion that decides the outcome, add
   `{"criterion": "<ID>", "quote": "<exact text copied from text_file>"}`.

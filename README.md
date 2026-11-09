@@ -29,14 +29,27 @@ relative path. From the folder where you will keep your reviews (the workspace):
 ```bash
 git clone https://github.com/neurostuff/autonima-skills
 autonima-skills/install.sh .
-pip install pyyaml            # every stage; add nimare for the meta-analysis stage
 ```
 
-`install.sh` does three things:
+`install.sh` does five things:
 - **Skills:** links them into `.claude/skills` (Claude Code) and `.agents/skills` (Codex).
 - **Agent definitions:** copies them into `.claude/agents`.
-- **Lock:** records every installed file in `.autonima-skills.lock`. `ledger.py status`
-  compares against it and names any skill, script or judge setting edited since.
+- **Python environment:** builds `.venv` in the workspace from the package's `uv.lock`,
+  so every review runs on the tested versions: PyYAML, NiMARE 0.21.0 and the Elsevier
+  XML parser. Nothing is installed into the system Python. It uses
+  [uv](https://docs.astral.sh/uv/) when installed, otherwise `python3 -m venv` and the
+  pinned `requirements.lock.txt`. Python 3.10 or later; uv picks 3.12.
+  - `--no-env` skips the environment.
+  - `AUTONIMA_SKILLS_GROUPS="meta"` leaves out the Elsevier parser.
+- **Edit guard:** writes `.claude/settings.json` rules so that Claude Code cannot edit
+  the installed skills or agent definitions, which are links into this package.
+- **Lock:** records every installed file, and the interpreter, in `.autonima-skills.lock`.
+  `ledger.py status` compares against it and names any skill, script or judge setting
+  edited since.
+
+The judges run as `claude -p` (or `codex exec`) sessions with that CLI's own login.
+Check it with `claude auth status`. Before a review starts, `ledger.py check REVIEW`
+confirms everything the review will need: the packages, and the judge CLI and its login.
 
 **Network:** outbound access to `eutils.ncbi.nlm.nih.gov` for search and PMC, and to
 `neurostore.org` when a review uses NeuroStore.
@@ -47,15 +60,23 @@ In the agent, from the workspace:
 
 > Run the cbma-review skill on ./wm_schizophrenia. Pilot abstract screening on 50 records first.
 
-The `cbma-review` skill walks the stages. If `review.yaml` does not exist yet, it writes
-it with you first; `skills/cbma-review/references/review-spec.md` is the format.
+The `cbma-review` skill walks the stages. If `review.yaml` does not exist yet, it plans the
+review with you first, one question at a time:
+1. **Where studies, coordinates and full texts come from.** NeuroStore is recommended,
+   and PubMed is one choice away.
+2. **The judges' model:** Sonnet by default, never the orchestrator's own model.
+3. **The scope and targets.**
+
+It then drafts `review.yaml` (the format is in
+`skills/cbma-review/references/review-spec.md`), runs the search, and checks it against a
+few studies you know belong, before anything is judged.
 
 Once you confirm the criteria, the agent registers them as protocol v1. From the first
 judgment on, the agent cannot change them. You amend them yourself, in a terminal, with
 a reason:
 
 ```bash
-python autonima-skills/skills/cbma-review/scripts/ledger.py amend REVIEW --reason "..."
+.venv/bin/python autonima-skills/skills/cbma-review/scripts/ledger.py amend REVIEW --reason "..."
 ```
 
 Every version is kept, and the results carry the whole record.
@@ -93,7 +114,7 @@ with `--harness codex`.
 | [`cbma-selector`](agents/cbma-selector.md) | selection judges | medium |
 
 Every decision records the harness, model, effort and transport that made it, for
-example `claude-code/claude-opus-5-5/effort-low/single-response-v2`.
+example `claude-code/claude-sonnet-5-5/effort-low/single-response-v2`.
 
 ## What the scripts enforce
 
@@ -121,8 +142,7 @@ Issue numbers are [autonima's](https://github.com/neurostuff/autonima/issues).
 ## Tests
 
 ```bash
-pip install pytest pyyaml
-pytest tests
+uv run --group test --group meta pytest tests
 ```
 
 The tests run offline against fixtures and fake judge CLIs. They cover:

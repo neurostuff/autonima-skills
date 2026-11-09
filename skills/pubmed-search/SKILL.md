@@ -10,7 +10,7 @@ E-utilities calls for the review record. The script's log is what makes the sear
 reproducible and auditable.
 
 ```bash
-python SKILLS/pubmed-search/scripts/pubmed_search.py REVIEW
+PYTHON SKILLS/pubmed-search/scripts/pubmed_search.py REVIEW
 ```
 
 It reads `search:` from `REVIEW/review.yaml` (the query, the date range, and
