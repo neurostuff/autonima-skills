@@ -118,7 +118,8 @@ def quiet(fn, *args):
 def test_search_writes_every_pmid_and_logs_the_rest(review, api):
     out = ns.cmd_search(review, ns.Client())
     assert out == {"pmids": 3, "without_pmid": 1, "malformed_pmid": [], "frozen": False,
-                   "written": str(review / "search" / "neurostore_pmids.txt")}
+                   "written": str(review / "search" / "neurostore_pmids.txt"),
+                   "imaging_terms": ["fMRI"], "warning": ns.IMAGING_WARNING}
     assert (review / "search" / "neurostore_pmids.txt").read_text().split() == PMIDS
     log = json.loads((review / "search" / "neurostore_search_log.json").read_text())
     assert log["params"] == {"query": '"emotion regulation" AND fMRI', "search_full_text": False,
@@ -322,3 +323,96 @@ def test_a_malformed_pmid_is_logged_not_carried(review, api):
     log = json.loads((review / "search" / "neurostore_search_log.json").read_text())
     assert [(m["pmid"], m["number_also_found"]) for m in log["malformed_pmid"]] == [
         ("11111111-DUPLICATE", True), ("PMC123", False)]
+
+
+def test_imaging_terms_are_flagged_in_a_neurostore_query():
+    q = '("cue reactivity" OR craving) AND (fMRI OR "functional magnetic resonance" OR "functional MRI" OR PET)'
+    assert ns.imaging_terms(q) == ["fMRI", "functional magnetic resonance", "functional MRI", "PET"]
+    assert ns.imaging_terms('"cue reactivity" OR craving OR "pet ownership"') == []
+
+
+def test_search_and_count_warn_about_an_imaging_clause(review, monkeypatch):
+    sent = '"emotion regulation" AND fMRI'
+    api = QueryAPI({(sent, "false"): PMIDS[:2], (sent, "true"): PMIDS})
+    monkeypatch.setattr(ns.Client, "_open", lambda self, url: api(url))
+    out = ns.cmd_search(review, ns.Client())
+    assert out["imaging_terms"] == ["fMRI"] and "Leave imaging terms out" in out["warning"]
+    count = ns.cmd_count(review, ns.Client())
+    assert count["title_abstract"] == 2 and count["full_text"] == 3 and count["full_text_ratio"] == 1.5
+    assert count["searching"] == "title_abstract" and count["imaging_terms"] == ["fMRI"]
+    assert all(q["page_size"] == "1" for _, q in api.calls[-2:])
+
+
+def test_the_ledger_check_reports_imaging_terms_without_failing(review, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda cli: None)       # no judge CLI needed here
+    out = ledger.cmd_check(ledger.Review(review))
+    row = next(c for c in out["checks"] if c["check"] == "neurostore_query")
+    assert not row["ok"] and not row["required"] and "['fMRI']" in row["detail"]
+
+
+def _hybrid_review(review, fallback):
+    """Three studies through full text; NeuroStore has analyses for one of them only."""
+    yaml = REVIEW_YAML.replace("  neurostore: {}", f"  neurostore: {{fallback: {fallback}}}") if fallback \
+        else REVIEW_YAML
+    (review / "review.yaml").write_text(yaml)
+    (review / "search").mkdir()
+    recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
+    (review / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    for p in PMIDS[1:]:                                   # papers with a coordinate table
+        d = review / "docs" / p
+        (d / "tables").mkdir(parents=True)
+        (d / "text.md").write_text("# Paper\nMethods. Results in Table 1.")
+        (d / "meta.json").write_text(json.dumps({"text_sha256": p, "source": "pmc", "complete": True}))
+        (d / "tables" / "t1.json").write_text(json.dumps({
+            "table_id": "t1", "label": "Table 1", "caption": "Peaks", "coordinate_candidate": True,
+            "duplicate_of": None, "has_data": True, "content_sha256": p, "grid": [["x", "y", "z"], ["1", "2", "3"]]}))
+    assert quiet(ledger.main, ["register", str(review)]) == 0
+    rv = ledger.Review(review)
+    (review / "decisions").mkdir()
+    for stage in ("abstract", "fulltext"):
+        rows = [{"stage": stage, "pmid": p, "decision": "include", "criteria": {"I1": "met"}, "reason": "x",
+                 "criteria_hash": rv.criteria[stage]["hash"], "input_hash": rv.input_hash(stage, p),
+                 "protocol_version": 1} for p in PMIDS]
+        (review / "decisions" / f"{stage}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+def test_records_mode_refuses_judged_extraction_without_the_fallback(review, api):
+    _hybrid_review(review, None)
+    ns.cmd_records(review, ns.Client())
+    ledger.cmd_import_analyses(ledger.Review(review), "neurostore")
+    with pytest.raises(ledger.LedgerError, match="fallback: judged"):
+        ledger.cmd_batches(ledger.Review(review), "extraction", 1, None, False)
+    ext = ledger.cmd_status(ledger.Review(review))["extraction"]
+    assert ext["pending"] == 2 and ext["pending_without_record"] == 2 and ext["fallback"] == "none"
+
+
+def test_the_hybrid_fallback_hands_judges_only_what_neurostore_lacks(review, api):
+    _hybrid_review(review, "judged")
+    rv = ledger.Review(review)
+    assert rv.criteria["extraction"]["payload"]["neurostore"] == {"fallback": "judged"}
+    # Before records has looked anything up, nothing is judged: NeuroStore comes first.
+    assert ledger.cmd_batches(rv, "extraction", 1, None, False) == []
+    ns.cmd_records(review, ns.Client())
+    report = ledger.cmd_import_analyses(ledger.Review(review), "neurostore")
+    assert report["imported"] == 1 and sorted(report["no_record"]) == PMIDS[1:]
+    paths = ledger.cmd_batches(ledger.Review(review), "extraction", 1, None, False)
+    batched = sorted(json.loads(p.read_text())["items"][0]["pmid"] for p in paths)
+    assert batched == PMIDS[1:]                      # no_kept_analyses and not_in_neurostore
+    ext = ledger.cmd_status(ledger.Review(review))["extraction"]
+    assert ext["fallback"] == "judged" and ext["pending_without_record"] == 2
+
+
+@pytest.mark.parametrize("change, message", [
+    ("search: {query: q}\nextraction:\n  neurostore: {fallback: maybe}", "fallback must be none"),
+    ("search: {query: q}\nextraction:\n  neurostore: {fallback: judged}\nscreening:\n  abstract: {inclusion: [H]}\n"
+     "  fulltext: {inclusion: [W], select_analyses: true}", "cannot be combined"),
+])
+def test_the_ledger_rejects_unclear_fallbacks(tmp_path, change, message):
+    rv = tmp_path / "review"
+    rv.mkdir()
+    body = "objective: t\n" + change
+    if "screening:" not in change:
+        body += "\nscreening:\n  abstract: {inclusion: [H]}\n  fulltext: {inclusion: [W]}\n"
+    (rv / "review.yaml").write_text(body + "\n")
+    with pytest.raises(ledger.LedgerError, match=message):
+        ledger.Review(rv)

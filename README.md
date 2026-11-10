@@ -61,15 +61,28 @@ In the agent, from the workspace:
 > Run the cbma-review skill on ./wm_schizophrenia. Pilot abstract screening on 50 records first.
 
 The `cbma-review` skill walks the stages. If `review.yaml` does not exist yet, it plans the
-review with you first, one question at a time:
-1. **Where studies, coordinates and full texts come from.** NeuroStore is recommended,
-   and PubMed is one choice away.
+review with you first, in a few questions:
+1. **The route.**
+   - **NeuroStore (recommended):** NeuroStore finds the studies and supplies their
+     coordinates.
+   - **PubMed:** PubMed finds them, and judges extract coordinates from the papers'
+     tables.
+   - **Hybrids:** for example, a PubMed search using NeuroStore's coordinates where a
+     study has them.
 2. **The judges' model:** Sonnet by default, never the orchestrator's own model.
-3. **The scope and targets.**
+3. **The scope and targets,** including whether a neighbouring paradigm belongs.
 
-It then drafts `review.yaml` (the format is in
-`skills/cbma-review/references/review-spec.md`), runs the search, and checks it against a
-few studies you know belong, before anything is judged.
+It then drafts `review.yaml`, with the remaining choices as defaults you can change in one
+reply: all years, full text for the judges, and the estimator. The format is in
+`skills/cbma-review/references/review-spec.md`. The agent then runs the search; if you
+know studies that belong, it checks the search finds them.
+
+After registration it recommends a **pilot:**
+1. It runs every stage on a random sample: about 40 abstracts and 8 full texts.
+2. It walks you through the decisions (`scripts/pilot.py`), recording where you agree.
+3. It turns your disagreements into proposed criteria edits.
+
+Edits after a pilot are amendments, and they re-open only the pilot's decisions.
 
 Once you confirm the criteria, the agent registers them as protocol v1. From the first
 judgment on, the agent cannot change them. You amend them yourself, in a terminal, with

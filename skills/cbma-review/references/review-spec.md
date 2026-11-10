@@ -10,14 +10,14 @@ objective: >                    # REQUIRED. What the meta-analysis is for; shown
 
 search:
   query: '(schizophrenia[tiab]) AND ("working memory"[tiab]) AND (fMRI[tiab] OR "functional magnetic resonance"[tiab])'
-  date_from: 2000/01/01         # optional, publication date, YYYY/MM/DD
-  date_to: 2025/12/31           # optional
+  date_from: 2000/01/01         # optional, publication date, YYYY/MM/DD; leave both out for all years
+  date_to: 2025/12/31           # optional (the default: no limit)
   pmids: ["12345678"]           # optional; unioned with the query results
   pmids_file: seeds.txt         # optional; one PMID per line, relative to the review folder
   email: you@example.org        # recommended; NCBI asks tools to identify a contact
   # neurostore:                 # NeuroStore finds the candidates (neurostore skill); `query` above is
   #                             # translated for it, or give neurostore.query in NeuroStore's syntax instead
-  #   search_full_text: false
+  #   search_full_text: false   # with NeuroStore, leave imaging-method terms out of `query`
   #   data_type: coordinate
   #   snapshot: null
 
@@ -57,7 +57,8 @@ extraction:
   drop_unverified: true         # default true: export only points found in their table row
   instructions: ""              # optional, appended to the extraction skill
   records: /data/pondie/records # optional: records mode, see below
-  # neurostore: {}              # instead of `records`: NeuroStore's extracted analyses (neurostore skill)
+  # neurostore: {}              # instead of `records`: NeuroStore's extracted analyses (neurostore skill);
+  #                             # {fallback: judged} also has judges extract the studies NeuroStore lacks
 
 selection:                      # analysis-level selection for each meta-analytic target
   global:                       # apply to every target; become GI1.., GE1..

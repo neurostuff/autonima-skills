@@ -46,6 +46,7 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import random
 import re
 import shlex
 import socket
@@ -198,6 +199,11 @@ def main(argv=None) -> int:
                                     f"--harness claude: {DEFAULT_CLAUDE_JUDGE}; required for codex)")
     ap.add_argument("--size", type=int)
     ap.add_argument("--limit", type=int, help="batch at most this many items in the first round (pilots)")
+    ap.add_argument("--random", action="store_true",
+                    help="with --limit: a seeded random sample of the pending items, not the lowest PMIDs "
+                         "(which are the oldest papers). The same pending set gives the same sample, so a "
+                         "pilot re-run after an amendment judges the same studies again")
+    ap.add_argument("--seed", type=int, default=0, help="the --random sample's seed (default 0)")
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--rounds", type=int, default=3, help="dispatch rounds per call: the first, plus retries")
     ap.add_argument("--max-attempts", type=int, default=3, help="persistent attempts per unchanged item")
@@ -273,7 +279,14 @@ def main(argv=None) -> int:
                             break
                 if len(historical) >= args.limit:
                     break
-            initial = historical or (sorted(existing) if existing else rv.pending(args.stage)[:args.limit])
+            if historical or existing:
+                initial = historical or sorted(existing)
+            elif args.random:
+                candidates = sorted(rv.pending(args.stage), key=int)
+                initial = sorted(random.Random(args.seed).sample(candidates, min(args.limit, len(candidates))),
+                                 key=int)
+            else:
+                initial = rv.pending(args.stage)[:args.limit]
             if historical and len(initial) < args.limit:
                 initial += [p for p in sorted(existing) if p not in initial]
             if len(initial) > args.limit:

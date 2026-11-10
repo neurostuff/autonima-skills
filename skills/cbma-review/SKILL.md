@@ -69,15 +69,24 @@ There are two kinds of question, and they are asked differently.
 
 **Planning: few questions, then a draft.** Before `review.yaml` exists, ask only the
 questions that define the review:
-- **where the studies, coordinates and texts come from** (step 1 below);
+- **the route:** where the studies, their evidence and their coordinates come from (step 1
+  below);
 - **the judges' model** (step 2);
-- **the review question and population, and the targets** (step 3).
+- **the review question and population, the targets, and any neighbouring scope** (step 3).
 
 That is at most about eight questions. Use AskUserQuestion, which takes up to four
 related questions per call. Everything else goes into the draft with its recommended
-default, for example cue modality, age limits, imaging methods, the trimmed text view,
-the estimator and the corrector. Show those defaults as one short list the user can
-change in a single reply. Don't ask about each one.
+default. Show those defaults as one short list the user can change in a single reply.
+Don't ask about each one. The list always states:
+- **the publication years:** "all years" unless the user named a range;
+- **the coordinate source:** NeuroStore's analyses on the NeuroStore route;
+- **the text the full-text judges read:** the full text (trimmed is an option, below);
+- **full-text search:** off, with the record count it would give (NeuroStore route);
+- **the estimator and the corrector;**
+- **the pilot:** recommended (step 7).
+
+Other choices, such as cue modality, age limits or imaging methods, go in the same list
+when they apply.
 
 **Decisions during the review: one per question.** A problem a stage runner raises, a
 change to the protocol, or anything that changes which studies, analyses or maps
@@ -107,28 +116,38 @@ system Python, and never run `pip install` without asking the user.
 If `REVIEW/review.yaml` exists, run `LEDGER init REVIEW` and continue from
 `LEDGER status REVIEW`. Otherwise plan the review with the user, in this order:
 
-1. **Where the studies, coordinates and texts come from.** These choices set most of
-   a review's cost, so they come first.
-   - **Search index.**
-     - **NeuroStore (recommended):** searches the papers NeuroStore has indexed. On
-       the benchmark's queries it returned about 2.7 times fewer records than PubMed.
-       Its recall of the benchmark's included studies was 0.71, against PubMed's
-       0.85. Its candidates mostly have coordinates already.
-     - **PubMed:** covers the whole literature, but every extra candidate needs its
-       full text fetched. Always offer it; never hide it.
-   - **Coordinates.**
-     - **NeuroStore's pre-extracted analyses** (`extraction.neurostore`): the default
-       with a NeuroStore search. There is no extraction stage to pay for.
-     - **Judges extract them from each paper's tables:** one judge per study, and it
-       needs full text with tables.
-   - **Full text** (`fulltext.sources`). Full-text screening always needs it,
-     whatever the coordinate source.
-     - **PMC open access, plus local folders.** Ask whether the user has folders of
-       downloaded publisher HTML or XML.
-     - **Say plainly what PMC alone covers,** which is often a minority of candidates.
-       In the emotion regulation pilot, PMC gave usable text for 148 of 298
-       candidates. Of the 64 benchmark-included studies the search found, 45 had no
-       usable PMC text.
+1. **The route.** Ask one question: which route the review takes. The route sets where
+   studies are found, what screening reads, where coordinates come from, and most of the
+   cost, so it comes first.
+   - **NeuroStore route (recommended).** NeuroStore finds the studies
+     (`search.neurostore`), and its pre-extracted analyses supply the coordinates
+     (`extraction.neurostore`), so there is no extraction stage to pay for. On the
+     benchmark's queries NeuroStore returned about 2.7 times fewer records than PubMed,
+     with recall of the benchmark's included studies of 0.71 against PubMed's 0.85, and
+     its candidates mostly have coordinates already.
+   - **PubMed route.** PubMed finds the studies; every candidate's full text is fetched;
+     judges screen it and extract the coordinates from its tables. It covers the whole
+     literature, and it depends on how much full text the user can get. Always offer it;
+     never hide it.
+   - **Hybrids,** offered as variants in the same question, not as questions of their own:
+     - **PubMed search with NeuroStore's coordinates where a study has them:**
+       `extraction.neurostore` with `fallback: judged`. Judges extract only the studies
+       NeuroStore has no analyses for. It can reach studies a NeuroStore search cannot:
+       ones NeuroStore does not index, or indexes without coordinates. In the
+       cue-reactivity pilot those were 13 of the 38 benchmark studies the NeuroStore
+       search missed; whether a PubMed search finds them depends on its query, and has
+       not been measured.
+     - **NeuroStore search with judged extraction from the papers' tables:** NeuroStore
+       search and no `extraction.neurostore`.
+   - **Don't ask about the coordinate source on the NeuroStore route.** It is NeuroStore's
+     analyses; state it in the draft's defaults.
+   - **Full text** (`fulltext.sources`). On every route, full-text screening and selection
+     read each paper's text, so ask once whether the user has folders of downloaded
+     publisher HTML or XML to add after PMC open access.
+     - **Say plainly what PMC alone covers,** which is often a minority of candidates. In
+       the emotion regulation pilot, PMC gave usable text for 148 of 298 candidates. Of
+       the 64 benchmark-included studies the search found, 45 had no usable PMC text.
+     - A study with no text is reported as unavailable, never excluded.
 2. **The judges' model.** Ask which model the judges use, and recommend
    `claude-sonnet-5-5` for every stage in Claude Code (`run_stage.py`'s default).
    - **Never default to your own model.** A judge reads one batch and returns one JSON
@@ -137,36 +156,106 @@ If `REVIEW/review.yaml` exists, run `LEDGER init REVIEW` and continue from
      stage. Decisions record their model, so a review that switches midway mixes
      judges.
    - **With Codex,** ask for a model id; there is no default.
-3. **Scope:** the question, the population, and the meta-analytic targets. For each
-   target, give one or two concrete example contrasts it would include and one it would
-   not, so the user can correct the definition on examples rather than on words.
-   Settle the remaining choices as defaults in the draft (see Asking the user).
+3. **Scope:** the question, the population, and the meta-analytic targets.
+   - **Ask once about neighbouring scope.** When an adjacent paradigm shares the design of
+     the one the user named, ask whether it belongs, as its own target, pooled, or out of
+     scope. For example, "drug cue reactivity" neighbours natural-reward cues (food,
+     sexual), which use the same cue > neutral design. This question is cheap in
+     planning and costly after registration.
+   - **Give examples for each target:** one or two concrete contrasts it would include,
+     and one near-miss it would not, named explicitly. For a natural-reward cue target, a
+     near-miss is the monetary incentive delay task's anticipation cues: a cue paradigm
+     by some definitions, but not a depiction of the reward. Users correct definitions
+     more reliably on examples than on words.
+   - Settle the remaining choices as defaults in the draft (see Asking the user).
 4. **Draft `review.yaml`.** The format is in `references/review-spec.md`, and
    `references/example-review.yaml` is a starting point.
+   - **Dates:** no `date_from` or `date_to` unless the user asked for a range. Most
+     reviews want every study; a cutoff matters mainly when reproducing or updating a
+     published review. The draft's defaults say "all years".
+   - **On the NeuroStore route, leave imaging-method terms out of the query:** no fMRI,
+     PET, MRI or neuroimaging clause. Tell the user why: NeuroStore indexes neuroimaging
+     studies only, and the coordinate filter already requires coordinates, so such a
+     clause mostly drops studies whose abstract names the method differently ("BOLD",
+     "magnetic resonance imaging") or not at all. The query carries only the topic's
+     terms. A PubMed query keeps its imaging clause.
+   - **Full-text search** (`search.neurostore.search_full_text: true`) is an option, not
+     the default. Run `PYTHON SKILLS/neurostore/scripts/neurostore.py count REVIEW` and
+     state its cost in records. In the cue-reactivity pilot it gave 4 times the records,
+     and found 3% more of the benchmark's studies than a query without the imaging clause.
+   - **Text view:** full-text judges read the full text (`screening.fulltext.text: full`,
+     the default). The trimmed view (`text: trimmed`) is an option that roughly halves
+     what they read. Its effect on screening accuracy has not been measured, so offer it
+     only as a cost saving, and never present it as the default.
    - Run `LEDGER init REVIEW`. It rejects unknown keys, so a typo fails loudly.
    - Run `LEDGER check REVIEW`. Fix what it reports before going on, for example a
-     missing package, or a judge CLI that is not logged in (the user runs
-     `claude auth login` in a terminal).
-5. **Search, then check it against known studies.** Run the search (stage 1 below),
-   then ask the user for 5 to 10 studies they know belong in the review, from their
-   own reading:
+     missing package, a judge CLI that is not logged in (the user runs `claude auth
+     login` in a terminal), or imaging terms in a NeuroStore query.
+5. **Search.** Run the search (stage 1 below), and report the count.
+   - **Known studies are optional.** Say, in the same message as the count: "If you know
+     studies that belong in this review, give me their PMIDs and I'll check the search
+     finds them." If the user has none, move on; the pilot (step 7) is the default check.
+   - **If they give some,** run:
 
-   ```bash
-   PYTHON SKILLS/pubmed-search/scripts/check_known.py REVIEW --pmids <pmid> ...
-   ```
+     ```bash
+     PYTHON SKILLS/pubmed-search/scripts/check_known.py REVIEW --pmids <pmid> ...
+     ```
 
-   For each study the search missed, it gives the reason and the study's title,
-   keywords and MeSH terms.
-   - **Show the user the misses.** For each, propose the query change that would
-     catch it, or say why none is reasonable, for example when NeuroStore does not
-     index the study.
-   - **Re-run the search on their answer.** Nothing is judged yet, so revising is
-     free.
-   - **Use studies the user names.** Do not take the full included list of a
-     published review they are trying to reproduce: that puts the answer into the
-     search.
+     For each study the search missed, it gives the reason and the study's title,
+     keywords and MeSH terms. Show the misses, and for each propose the query change that
+     would catch it, or say why none is reasonable, for example when NeuroStore does not
+     index the study. Re-run the search on the user's answer: nothing is judged yet, so
+     revising is free.
+   - **Use studies the user names.** Do not take the full included list of a published
+     review they are trying to reproduce: that puts the answer into the search.
 6. **Show the numbered criteria** that `init` prints, and register them
    (Registration, below).
+7. **Recommend a pilot,** and run it unless the user declines. Give the reason: criteria
+   rarely survive first contact with real papers, and an amendment after a pilot re-opens
+   only the pilot's decisions, so editing then is cheap. See "Pilot" below.
+
+## Pilot
+
+A pilot runs every stage on a small sample, then reviews the decisions with the user.
+
+1. **Run the stages with `--limit N --random`:** a seeded random sample, not the lowest
+   PMIDs, which are the oldest papers. The same seed gives the same sample, so after an
+   amendment the pilot re-judges the same studies.
+   - about 40 abstracts (`--limit 40 --random`);
+   - retrieval for the ones that pass;
+   - about 8 full texts (`--limit 8 --random`);
+   - extraction, or the NeuroStore records and `import-analyses`;
+   - selection for the included studies.
+2. **Review it with the user, one stage at a time,** abstract first.
+   - Write the stage's sheet:
+
+     ```bash
+     PYTHON SKILLS/cbma-review/scripts/pilot.py sheet REVIEW --stage <abstract|fulltext|selection>
+     ```
+
+     It lists each decision with its reason, its criteria and, at full text, its quoted
+     evidence. At the abstract stage it shows every include and uncertain, and a sample of
+     the excludes. Without known studies, recall cannot be measured, so check the excludes
+     for studies that belong.
+   - Show the decisions to the user in groups of about five, and ask whether they agree.
+   - Record each verdict as the user gives it:
+
+     ```bash
+     PYTHON SKILLS/cbma-review/scripts/pilot.py record REVIEW --stage <stage> --pmid <pmid> \
+         [--analysis <id> --target <name>] --verdict agree|disagree [--criterion <ID>] [--note "<their words>"]
+     ```
+
+     A verdict never changes a decision.
+3. **Turn the disagreements into edits.** Run `pilot.py summary REVIEW`. It counts
+   agreement per stage and groups the disagreements by criterion. Propose one edit per
+   criterion, in the criterion's own words, and show which pilot decisions it would
+   change.
+4. **Amend, or continue.**
+   - **The user has edits:** the pilot judged items, so this is an amendment. Give them
+     the `amend` command (Registration, below) with the edits in `review.yaml`, then
+     re-run the pilot's re-opened decisions and review those again.
+   - **No edits:** the full run continues under the same protocol version, and the
+     pilot's decisions stand.
 
 ## Registration
 
@@ -212,7 +301,7 @@ validates. It then ingests, retries what was rejected, and prints one JSON summa
 stage to one `cbma-stage-runner` subagent, with this prompt, values filled in:
 
 > Run the `<stage>` stage. REVIEW=`<abs path>` SKILLS=`<abs path>` PYTHON=`<python>`
-> AGENT=`<harness>/<model id>`. [Batch size `<n>`.] [Pilot: `--limit <N>`.]
+> AGENT=`<harness>/<model id>`. [Batch size `<n>`.] [Pilot: `--limit <N> --random`.]
 
 `<model id>` is the judges' model chosen in planning: `claude-sonnet-5-5` unless the
 user chose another. It is never your own model by default.
@@ -262,7 +351,8 @@ Changing an effort is a protocol change (see Registration). Every decision recor
 the effort it was made with.
 
 **Pilots.** `--limit N` batches at most N items, and the pilot keeps that scope: its
-retries never expand into unscreened records.
+retries never expand into unscreened records. With `--random` (and `--seed`, 0 by default)
+the N are a random sample of the pending items instead of the lowest PMIDs.
 
 **Audit trail.** Every attempt keeps its inputs' hashes, the raw CLI output, the
 response and what was saved, under `REVIEW/work/<stage>/judge_responses/`.
@@ -306,10 +396,13 @@ pilot the user asked for. Otherwise, after each stage:
    every parsed table (captions, headers and footnotes included) and the paper's
    Methods and coordinate-space paragraphs. A judge that reports `context_needed`
    gets the full paper once, within the same retry limit. In records mode
-   (`extraction.records` or `extraction.neurostore` is set in `review.yaml`) there is
-   nothing to judge: with `extraction.neurostore`, run the `neurostore` skill's
+   (`extraction.records` or `extraction.neurostore` is set in `review.yaml`) the records
+   are the extractor: with `extraction.neurostore`, run the `neurostore` skill's
    `records`; then run `LEDGER import-analyses REVIEW` instead of the stage, and report
-   its counts, including studies with no record, which stay pending.
+   its counts, including studies with no record.
+   - **With `extraction.neurostore.fallback: judged`** (a hybrid), then run the `extraction`
+     stage: judges extract exactly the studies NeuroStore had no analyses for.
+   - **Without it,** those studies stay pending, and are reported.
 6. **Selection:** run the `selection` stage. Judges receive the full article and the
    extracted analyses, and must decide every analysis × target pair. Skip the stage
    if `review.yaml` defines no targets.

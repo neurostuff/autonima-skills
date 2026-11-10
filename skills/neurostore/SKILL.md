@@ -19,6 +19,7 @@ not share it: retrieval is unchanged (`fulltext-sources`, including local folder
 ```bash
 PYTHON SKILLS/neurostore/scripts/neurostore.py search  REVIEW
 PYTHON SKILLS/neurostore/scripts/neurostore.py records REVIEW
+PYTHON SKILLS/neurostore/scripts/neurostore.py count   REVIEW   # planning: records found, both ways
 ```
 
 Both scripts need network access to `neurostore.org`, unless the setting names a
@@ -28,15 +29,28 @@ snapshot.
 
 ```yaml
 search:
-  query: '("emotion regulation"[tiab] OR reappraisal*[tiab]) AND fMRI[tiab]'   # PubMed, translated
-  date_from: 2000/01/01          # NeuroStore filters by year
-  date_to: 2019/12/31
+  query: '"emotion regulation"[tiab] OR reappraisal*[tiab]'   # PubMed, translated; topic terms only
+  # date_from: 2000/01/01        # only if the user asked for a range; NeuroStore filters by year
+  # date_to: 2019/12/31
   neurostore:
     # query: '...'               # instead of search.query: a query in NeuroStore's own syntax
     search_full_text: false      # true: match the article text too, not only title and abstract
     data_type: coordinate        # coordinate (default) | image | both | null for every study
     snapshot: null               # an earlier search log to reuse instead of searching
 ```
+
+**Topic terms only: no imaging-method clause.** NeuroStore indexes neuroimaging studies
+only, and `data_type: coordinate` already requires coordinates, so a clause such as
+`AND (fMRI OR PET OR "functional magnetic resonance")` mostly drops studies whose abstract
+names the method differently ("BOLD", "magnetic resonance imaging") or not at all. In the
+cue-reactivity pilot it cost 15 of the 38 benchmark studies the search missed. `search`,
+`count` and `ledger.py check` warn about imaging terms (`imaging_terms` in their output).
+
+**Titles and abstracts, or full text.** `count` reports how many studies the query finds
+both ways, without writing anything. Full-text search finds more, at a cost in records to
+screen: in the cue-reactivity pilot, 4 times the records for 3% more of the benchmark's
+studies than a query without the imaging clause. Offer it as an option, with the numbers
+from `count`; the default is titles and abstracts.
 
 Give one query, not both:
 
@@ -87,6 +101,7 @@ extraction:
     sources: [study_schema, nuextract-v21, llm, neurostore, pubget, nuextract-v19, neuroquery, neurosynth]
     roles: [result]
     snapshot: null               # a frozen analyses snapshot to read instead of the API
+    fallback: none               # none (default) | judged: judges extract the studies NeuroStore has nothing for
 ```
 
 Run `records` after abstract screening; it covers every study that passed it. Then run
@@ -110,6 +125,12 @@ do both after retrieval and before full-text screening.
   - `not_in_snapshot`.
 
   They stay pending at extraction, and are reported.
+- **The hybrid fallback:** with `fallback: judged`, the extraction stage hands exactly those
+  studies to judges, who extract from the paper's tables as on the PubMed route. A study is
+  judged only after `records` has looked it up and found nothing usable (a `fetch_failed`
+  is retried by `records`, never judged), so NeuroStore's coordinates always come first.
+  It suits a PubMed search, whose candidates NeuroStore may not index. It cannot be used
+  with combined mode (`screening.fulltext.select_analyses`).
 
 **Frozen once fetched.** NeuroStore updates its parses in place, so what each study used
 is kept in `neurostore/analyses.json` and reused on later runs. Changing `sources` or

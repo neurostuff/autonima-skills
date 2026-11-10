@@ -389,3 +389,30 @@ def test_a_batch_judge_cannot_start_a_stage_runner(tmp_path, monkeypatch):
         assert exc.code == 2
     else:
         raise AssertionError("the runner started inside a judge")
+
+
+def test_a_random_pilot_is_a_seeded_sample_not_the_lowest_pmids(tmp_path, capsys, monkeypatch):
+    """--limit alone takes the lowest PMIDs, the oldest papers. --random samples the pending items,
+    and the same seed over the same pending set gives the same sample, so a pilot re-run after an
+    amendment judges the same studies."""
+    ws = tmp_path / "ws"
+    rv = ws / "review"
+    (rv / "search").mkdir(parents=True)
+    (rv / "review.yaml").write_text("objective: t\nsearch: {query: q}\nscreening:\n  abstract: {inclusion: [H]}\n"
+                                    "  fulltext: {inclusion: [W]}\n")
+    recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
+    (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
+    fake = tmp_path / "fake_claude.py"
+    fake.write_text(FAKE_CLAUDE)
+    monkeypatch.chdir(ws)
+    pmids = sorted((r["pmid"] for r in recs), key=int)
+    import random
+    expected = sorted(random.Random(5).sample(pmids, 2), key=int)
+    run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "1", "--limit", "2",
+                    "--random", "--seed", "5", "--cli", f"{sys.executable} {fake}"])
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["accepted"] == 2 and summary["total_stage_pending"] == 1
+    judged = sorted((json.loads(line)["pmid"] for line in open(rv / "decisions" / "abstract.jsonl")), key=int)
+    assert judged == expected

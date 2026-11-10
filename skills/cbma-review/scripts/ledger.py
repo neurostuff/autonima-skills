@@ -31,6 +31,7 @@ Design rules (each one closes a failure mode found in autonima):
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import json
@@ -179,7 +180,7 @@ _ALLOWED = {
     "screening.stage": {"inclusion", "exclusion", "instructions", "select_analyses", "objective", "text"},
     "fulltext": {"sources"},
     "extraction": {"drop_unverified", "instructions", "records", "neurostore"},
-    "extraction.neurostore": {"sources", "roles", "snapshot"},
+    "extraction.neurostore": {"sources", "roles", "snapshot", "fallback"},
     "selection": {"global", "targets", "instructions"},
     "selection.global": {"inclusion", "exclusion"},
     "selection.target": {"name", "description", "inclusion", "exclusion", "instructions"},
@@ -261,6 +262,12 @@ def validate_spec(spec: dict) -> None:
             unknown = set(ns.get(key) or []) - set(known)
             if unknown:
                 raise LedgerError(f"extraction.neurostore.{key}: unknown {sorted(unknown)} (known: {list(known)})")
+        if ns.get("fallback", "none") not in ("none", "judged"):
+            raise LedgerError("extraction.neurostore.fallback must be none (the default) or judged")
+        if ns.get("fallback") == "judged" and ft.get("select_analyses"):
+            raise LedgerError("extraction.neurostore.fallback: judged cannot be combined with "
+                              "screening.fulltext.select_analyses: combined mode needs every study's analyses "
+                              "before full-text screening, and judged extraction comes after it")
     selection = spec.get("selection") or {}
     _check_keys(selection, "selection", "selection")
     _check_keys(selection.get("global") or {}, "selection.global", "selection.global")
@@ -592,6 +599,28 @@ def extraction_input_view(review_root: Path) -> str:
     return view
 
 
+# Why neurostore.py records found nothing for a study. A fetch failure is transient, so it is
+# retried there, never handed to judges.
+NO_RECORD_REASONS = {"not_in_neurostore", "no_coordinates", "no_coordinates_from_configured_sources",
+                     "no_kept_analyses", "not_in_snapshot"}
+
+
+def judged_fallback(spec: dict) -> bool:
+    """With extraction.neurostore.fallback: judged, judges extract the studies NeuroStore has no
+    analyses for (a hybrid: NeuroStore's coordinates where it has them, the paper's tables otherwise)."""
+    ns = (spec.get("extraction") or {}).get("neurostore")
+    return isinstance(ns, dict) and ns.get("fallback") == "judged"
+
+
+def neurostore_without_record(rv: "Review") -> Dict[str, str]:
+    """The studies `neurostore.py records` looked up and found nothing usable for, with the reason."""
+    path = rv.root / "neurostore" / "unavailable.csv"
+    if not path.exists():
+        return {}
+    with path.open() as fh:
+        return {r["pmid"]: r["reason"] for r in csv.DictReader(fh) if r.get("reason") in NO_RECORD_REASONS}
+
+
 def _record_tableless(rv: Review, pmid: str, input_view: str) -> bool:
     """A study with no parsed tables cannot yield an analysis: points are accepted only when they
     match a parsed table row. Across eight runs not one such study produced an analysis, yet each
@@ -628,6 +657,17 @@ def cmd_batches(rv: Review, stage: str, size: int, limit: Optional[int], discard
         else:
             p.unlink()
     pending = rv.pending(stage)
+    if stage == "extraction" and records_source(rv.spec):
+        # Records mode: import-analyses is the extractor. Judges extract only with the hybrid
+        # fallback, and only the studies NeuroStore was asked about and had nothing for, so a
+        # study whose record simply has not been fetched or imported yet is never judged.
+        if not judged_fallback(rv.spec):
+            raise LedgerError("extraction comes from records here: run `ledger.py import-analyses REVIEW` "
+                              "(with extraction.neurostore, `neurostore.py records REVIEW` first). To have judges "
+                              "extract the studies NeuroStore has no analyses for, the protocol must set "
+                              "extraction.neurostore.fallback: judged")
+        missing = neurostore_without_record(rv)
+        pending = [p for p in pending if p in missing]
     if stage == "extraction" and not rv.combined:
         pending = [p for p in pending if not _record_tableless(rv, p, input_view)]
     if limit:
@@ -1303,6 +1343,18 @@ def cmd_check(rv: "Review", harness: str = "claude") -> dict:
             add("nimare", True, f"nimare {getattr(nimare, '__version__', '?')}")
         else:
             add("nimare", False, err)
+    if "neurostore" in (rv.spec.get("search") or {}):
+        # Not required: a warning to show while the query can still change for free.
+        sys.path.insert(0, str(SKILLS_ROOT / "neurostore" / "scripts"))
+        import neurostore  # type: ignore
+        try:
+            query, _ = neurostore.resolve_query(rv.spec)
+            terms = neurostore.imaging_terms(query)
+            add("neurostore_query", not terms,
+                f"imaging terms {terms}: {neurostore.IMAGING_WARNING}" if terms else "no imaging-method terms",
+                required=False)
+        except neurostore.NeuroStoreError as exc:
+            add("neurostore_query", False, str(exc))
     cli = {"claude": "claude", "codex": "codex"}[harness]
     if not shutil.which(cli):
         add("judge_cli", False, f"`{cli}` is not on PATH; judges run as `{cli}` sessions")
@@ -1576,6 +1628,12 @@ def cmd_status(rv: Review) -> dict:
            "points_from_records": 0, "pending": 0}
     ext_pending = set(rv.pending("extraction"))
     ext["pending"] = len(ext_pending)
+    if records_source(rv.spec):
+        # Records mode: say which pending studies NeuroStore had nothing for. With the judged
+        # fallback the extraction stage takes those; without it they stay pending, reported.
+        missing = neurostore_without_record(rv)
+        ext["pending_without_record"] = sum(p in missing for p in ext_pending)
+        ext["fallback"] = "judged" if judged_fallback(rv.spec) else "none"
     for p in included:
         an = rv.analyses(p)
         if an is None or p in ext_pending:

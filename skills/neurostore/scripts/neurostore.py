@@ -2,6 +2,7 @@
 
     python neurostore.py search  REVIEW    # search.neurostore     -> search/neurostore_pmids.txt
     python neurostore.py records REVIEW    # extraction.neurostore -> neurostore/records/<pmid>.analyses.json
+    python neurostore.py count   REVIEW    # how many studies the query finds, in titles and abstracts and in full text
 
 `search` runs the review's NeuroStore query (titles and abstracts, or full text), checks that
 every result was retrieved, and writes the PMIDs. The query is search.neurostore.query as written,
@@ -51,6 +52,23 @@ VALUE_KINDS = {"z": "z-statistic", "t": "t-statistic", "f": "f-statistic", "r": 
                "beta": "beta"}
 SNAPSHOT_SCHEMA = 1
 
+# Imaging-method words. NeuroStore indexes neuroimaging studies only, and data_type: coordinate
+# already requires coordinates, so a clause of these mostly drops studies whose abstract names the
+# method differently ("BOLD", "magnetic resonance imaging") or not at all. In the cue-reactivity
+# pilot it cost 15 of 38 missed benchmark studies.
+IMAGING_TERMS = re.compile(
+    r"\b(f?MRI|functional magnetic resonance|magnetic resonance|functional MRI|(?-i:PET)|positron emission"
+    r"|neuroimaging|BOLD|fNIRS|SPECT|imaging)\b", re.I)
+
+
+def imaging_terms(query: str) -> List[str]:
+    """The imaging-method words in a NeuroStore query, as written, de-duplicated in order."""
+    seen: List[str] = []
+    for m in IMAGING_TERMS.finditer(query or ""):
+        if m.group(0).lower() not in [x.lower() for x in seen]:
+            seen.append(m.group(0))
+    return seen
+
 
 class NeuroStoreError(Exception):
     pass
@@ -90,6 +108,18 @@ class Client:
             if attempt + 1 < self.retries:
                 time.sleep(self.delay * (attempt + 1))
         raise NeuroStoreError(f"GET {url} failed after {self.retries} attempts: {last}")
+
+    def count(self, query: str, full_text: bool, data_type: Optional[str], year_min: Optional[int],
+              year_max: Optional[int]) -> Optional[int]:
+        """The total NeuroStore reports for a search, from one one-result page."""
+        params = {"search": query, "search_full_text": str(bool(full_text)).lower(), "flat": "true",
+                  "page_size": 1, "page": 1}
+        params.update({k: v for k, v in (("data_type", data_type), ("year_min", year_min),
+                                         ("year_max", year_max)) if v is not None})
+        data = self.get("base-studies/", params)
+        if data is None:
+            raise NeuroStoreError("the base-studies search returned 404")
+        return (data.get("metadata") or {}).get("total_count")
 
     def search(self, query: str, full_text: bool, data_type: Optional[str], year_min: Optional[int],
                year_max: Optional[int], page_size: int = 1000) -> tuple:
@@ -233,6 +263,43 @@ def cmd_search(review: Path, client: Optional[Client] = None) -> dict:
     if translation is not None:
         # The agent shows these to the user: what the PubMed query lost on the way to NeuroStore.
         report.update(neurostore_query=query, dropped=translation.dropped, approximated=translation.approximated)
+    terms = imaging_terms(query)
+    if terms:
+        report["imaging_terms"] = terms
+        report["warning"] = IMAGING_WARNING
+    return report
+
+
+IMAGING_WARNING = ("the query names imaging methods. NeuroStore indexes neuroimaging studies only, and the "
+                   "coordinate filter already requires coordinates, so this clause mostly drops studies whose "
+                   "abstract names the method differently or not at all. Leave imaging terms out of a "
+                   "NeuroStore query.")
+
+
+def cmd_count(review: Path, client: Optional[Client] = None) -> dict:
+    """What the search would find, without writing anything: in titles and abstracts, and in full
+    text. Planning shows both, so the user weighs full-text search against its cost in records."""
+    spec = load_spec(review)
+    if "neurostore" not in (spec.get("search") or {}):
+        raise NeuroStoreError("review.yaml sets no search.neurostore")
+    cfg = spec["search"]["neurostore"] or {}
+    query, translation = resolve_query(spec)
+    params = search_params(spec, query)
+    client = client or Client(cfg.get("base_url", API))
+    filters = (params["data_type"], params["year_min"], params["year_max"])
+    title_abstract = client.count(params["query"], False, *filters)
+    # Full text: the translated query's NOT clauses are applied to titles and abstracts by `search`,
+    # so the count here, of the query sent as is, is an upper bound for a query with NOT.
+    full_text = client.count(translation.include if translation is not None and translation.exclude
+                             else params["query"], True, *filters)
+    report = {"neurostore_query": query, "title_abstract": title_abstract, "full_text": full_text,
+              "full_text_ratio": round(full_text / title_abstract, 2) if title_abstract else None,
+              "searching": "full_text" if params["search_full_text"] else "title_abstract"}
+    if translation is not None and translation.exclude:
+        report["full_text_note"] = "before the NOT clauses, which `search` applies to titles and abstracts"
+    terms = imaging_terms(query)
+    if terms:
+        report.update(imaging_terms=terms, warning=IMAGING_WARNING)
     return report
 
 
@@ -381,12 +448,12 @@ def cmd_records(review: Path, client: Optional[Client] = None, pmids: Optional[I
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("command", choices=["search", "records"])
+    ap.add_argument("command", choices=["search", "records", "count"])
     ap.add_argument("review_dir", type=Path)
     args = ap.parse_args(list(argv) if argv is not None else None)
     review = args.review_dir.resolve()
     try:
-        report = cmd_search(review) if args.command == "search" else cmd_records(review)
+        report = {"search": cmd_search, "records": cmd_records, "count": cmd_count}[args.command](review)
     except NeuroStoreError as exc:
         print(f"NEUROSTORE ERROR: {exc}", file=sys.stderr)
         return 1
