@@ -86,25 +86,49 @@ def cmd_sheet(rv: "ledger.Review", stage: str, excludes: int = 10, seed: int = 0
         rows = sorted(dec.values(), key=lambda r: int(r["pmid"]))
         counts = Counter(r["decision"] for r in rows)
         if stage == "abstract":
-            keep = [r for r in rows if r["decision"] != "exclude"]
             sampled = _sample_excludes(rows, excludes, seed)
-            rows = sorted(keep + sampled, key=lambda r: int(r["pmid"]))
-            out += [f"Showing every include and uncertain, and {len(sampled)} of {counts['exclude']} excludes "
-                    f"(random sample, seed {seed}). Check the excludes for studies that belong.", ""]
+            # The most informative first: uncertain decisions show where a criterion is ambiguous,
+            # sampled excludes show wrongly dropped studies, and includes go on to full text anyway.
+            rows = ([r for r in rows if r["decision"] == "uncertain"] + sampled
+                    + [r for r in rows if r["decision"] == "include"])
+            out += [f"Order: {counts['uncertain']} uncertain, then {len(sampled)} of {counts['exclude']} excludes "
+                    f"(random sample, seed {seed}), then {counts['include']} includes. Check the excludes for "
+                    "studies that belong.", ""]
+        verdicts = _latest_verdicts(rv, stage)
         for r in rows:
-            title = rv.records.get(r["pmid"], {}).get("title", "")
-            out += [f"## {r['pmid']}: {title}", "",
-                    f"**{r['decision']}**. {r.get('reason', '')}", "", f"Criteria: {_states(r.get('criteria'))}"]
+            rec = rv.records.get(r["pmid"], {})
+            crit_states = r.get("criteria") or {}
+            deciding = [f"{k} {v}" for k, v in crit_states.items()
+                        if (k.startswith("I") and v != "met") or (k.startswith("E") and v == "met")]
+            out += [f"## {r['pmid']}: {rec.get('title', '')}", "",
+                    f"**{r['decision']}**" + (f" (deciding: {', '.join(deciding)})" if deciding else "")
+                    + f". {r.get('reason', '')}", "", f"Criteria: {_states(crit_states)}"]
+            v = verdicts.get(r["pmid"])
+            if v:
+                out.append(f"Your verdict: **{v['verdict']}**" + (f" ({', '.join(v['criteria'])})" if v["criteria"] else "")
+                           + (f". {v['note']}" if v.get("note") else ""))
             for e in r.get("evidence") or []:
                 if isinstance(e, dict):
                     out.append(f"> {e.get('criterion')}: \"{e.get('quote')}\"")
-            out.append("")
+            abstract = (rec.get("abstract") or "").strip()
+            meta = ", ".join(str(x) for x in (rec.get("journal"), rec.get("year")) if x)
+            out += ["", f"*{meta}*" if meta else "", "", abstract or "_No abstract._", ""]
             shown += 1
     path = rv.root / "pilot" / f"sheet_{stage}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(out) + "\n")
     return {"stage": stage, "decisions": sum(counts.values()), "by_decision": dict(counts), "shown": shown,
             "sheet": str(path)}
+
+
+def _latest_verdicts(rv: "ledger.Review", stage: str) -> dict:
+    """The user's latest verdict per study at a screening stage, under the current criteria."""
+    current = rv.accepted_criteria_hashes(stage)
+    out = {}
+    for r in ledger.read_jsonl(feedback_path(rv)):
+        if r["stage"] == stage and r["criteria_hash"] in current:
+            out[r["pmid"]] = r
+    return out
 
 
 def _current(rv: "ledger.Review", stage: str, pmid: str, analysis: Optional[str], target: Optional[str]):

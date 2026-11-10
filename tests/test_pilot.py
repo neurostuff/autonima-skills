@@ -50,8 +50,9 @@ def test_the_abstract_sheet_shows_every_include_and_a_sample_of_excludes(review)
     out = pilot.cmd_sheet(ledger.Review(review), "abstract", excludes=10)
     assert out["by_decision"] == {"include": 5, "exclude": 25} and out["shown"] == 15
     sheet = Path(out["sheet"]).read_text()
-    assert sheet.count("**include**") == 5 and sheet.count("**exclude**") == 10
-    assert "I2 not_met" in sheet and "10 of 25 excludes" in sheet
+    assert sheet.count("**include**") == 5 and sheet.count("**exclude** (deciding") == 10
+    assert sheet.index("**exclude**") < sheet.index("**include**")          # excludes before includes
+    assert "deciding: I2 not_met" in sheet and "10 of 25 excludes" in sheet and "\n\na\n" in sheet
 
 
 def test_verdicts_are_recorded_beside_the_decisions_never_into_them(review):
