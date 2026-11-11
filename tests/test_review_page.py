@@ -350,3 +350,12 @@ def test_a_complete_run_reports_only_the_checks_that_fire(review):
     assert list(checks) == ["concentration:food"]
     assert checks["concentration:food"]["go"] == {"view": "selection", "pmid": "10000000"}
     assert "6 of the 6" in checks["concentration:food"]["text"]
+
+
+def test_the_bundled_font_is_served_from_the_page_itself(server):
+    status, body, headers = call(server, "/fonts/Roboto-Regular.woff2", token=False)
+    assert status == 200 and headers["Content-Type"] == "font/woff2" and body[:4] == b"wOF2"
+    assert "font-src 'self'" in headers["Content-Security-Policy"]
+    assert call(server, "/fonts/LICENSE", token=False)[0] == 404              # only the listed files
+    css = call(server, "/app.css", token=False)[1].decode()
+    assert css.count("@font-face") == 4 and "fonts.googleapis" not in css

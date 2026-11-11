@@ -82,11 +82,16 @@ Don't ask about each one. The list always states:
 - **the coordinate source:** NeuroStore's analyses on the NeuroStore route;
 - **the text the full-text judges read:** the full text (trimmed is an option, below);
 - **full-text search:** off, with the record count it would give (NeuroStore route);
-- **the estimator and the corrector;**
+- **the estimator and the corrector:** MKDA density with FDR, the package's default.
+  Keep it, whatever is conventional in the field or the modality; offer ALE or
+  KDA only when the user asks for them;
 - **the pilot:** recommended (step 7).
 
 Other choices, such as cue modality, age limits or imaging methods, go in the same list
 when they apply.
+
+After the search, one more question asks for known studies (step 5). It is optional,
+and it is asked on its own.
 
 **Decisions during the review: one per question.** A problem a stage runner raises, a
 change to the protocol, or anything that changes which studies, analyses or maps
@@ -192,9 +197,19 @@ If `REVIEW/review.yaml` exists, run `LEDGER init REVIEW` and continue from
      missing package, a judge CLI that is not logged in (the user runs `claude auth
      login` in a terminal), or imaging terms in a NeuroStore query.
 5. **Search.** Run the search (stage 1 below), and report the count.
-   - **Known studies are optional.** Say, in the same message as the count: "If you know
-     studies that belong in this review, give me their PMIDs and I'll check the search
-     finds them." If the user has none, move on; the pilot (step 7) is the default check.
+   - **Then ask for known studies, as a question of its own.** They are optional, so
+     the question offers a way to skip, but it is never folded into a longer message: a
+     line at the end of the search report is missed when the next line asks to go ahead
+     (the VBM pilot). In Claude Code, ask with AskUserQuestion and nothing else in the
+     call:
+     - question: "Do you know studies that belong in this review? I'll check the search
+       finds them, the pilot will judge them first, and the review page will show where
+       each one ended up.";
+     - options: "No, skip this" and "Yes, I'll paste their PMIDs"; the user can also type
+       the PMIDs under "Other".
+
+     Otherwise ask it as the last line of a message that asks nothing else. If the user
+     has none, move on; the pilot (step 7) is the default check.
    - **If they give some,** run:
 
      ```bash
@@ -475,7 +490,7 @@ A stage runner does these and reports them. Without one, do them yourself.
   - `points_unverified` should be near 0. Unverified points are dropped at export.
   - Open two extracted studies and compare them with their tables by eye.
 - **Selection:** confirm each target has enough studies for a CBMA (usually at least
-  17 for ALE and 10 as an absolute floor). Say so if a target falls short.
+  17, and 10 as an absolute floor). Say so if a target falls short.
 
 ## Finishing
 

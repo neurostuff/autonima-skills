@@ -185,8 +185,33 @@ function renderTop() {
       h('span', { class: 'tiny', title: 'Judged by ' + Object.entries(ov.judges).filter(([, v]) => v.length).map(([s, v]) => `${s}: ${v.map((p) => p[0]).join(', ')}`).join('; ') },
         `protocol v${ov.protocol.version}` + (ov.protocol.amendments ? `, ${plural(ov.protocol.amendments, 'amendment')}` : '')),
       h('span', { class: 'spacer' }),
+      themeToggle(),
       h('button', { class: 'btn', title: 'Read the decisions again, after the judges have run', onclick: reload }, 'Reload')),
     h('nav', {}, VIEWS.map(([id, label]) => h('button', { 'aria-current': S.view === id ? 'page' : null, onclick: () => go(id) }, label))));
+}
+
+// Light or dark. The page follows the system until the reader picks one; the choice is kept in
+// this browser only, and the page works the same when storage is blocked.
+function currentTheme() {
+  const set = document.documentElement.dataset.theme;
+  if (set) return set;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function applyStoredTheme() {
+  try {
+    const t = localStorage.getItem('review-theme');
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  } catch (e) { /* storage blocked: follow the system */ }
+}
+function themeToggle() {
+  const dark = currentTheme() === 'dark';
+  return h('button', { class: 'btn theme-toggle', title: dark ? 'Switch to light mode' : 'Switch to dark mode',
+    'aria-label': dark ? 'Switch to light mode' : 'Switch to dark mode', onclick: () => {
+      const next = currentTheme() === 'dark' ? 'light' : 'dark';
+      document.documentElement.dataset.theme = next;
+      try { localStorage.setItem('review-theme', next); } catch (e) { /* kept for this page only */ }
+      renderTop();
+    } }, dark ? '☀' : '☾');
 }
 
 async function reload() {
@@ -871,6 +896,7 @@ window.addEventListener('hashchange', () => {
 });
 
 (async function boot() {
+  applyStoredTheme();
   S.token = takeToken();
   if (!S.token) {
     set($('#main'), h('div', { class: 'empty' }, h('h2', {}, 'This page needs its link'),

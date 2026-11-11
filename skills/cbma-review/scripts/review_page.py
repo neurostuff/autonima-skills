@@ -60,7 +60,8 @@ import pilot  # noqa: E402
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets" / "review_page"
 ASSET_TYPES = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8",
-               "app.css": "text/css; charset=utf-8"}
+               "app.css": "text/css; charset=utf-8",
+               **{f"fonts/Roboto-{w}.woff2": "font/woff2" for w in ("Regular", "Medium", "Bold", "Italic")}}
 MAX_TEXT = 600_000          # characters of a paper's text sent to the page
 MAX_TABLE_ROWS = 80
 
@@ -765,7 +766,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy",
-                         "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+                         "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; connect-src 'self'; "
                          "base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
