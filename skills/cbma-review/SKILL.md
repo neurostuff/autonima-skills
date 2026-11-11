@@ -208,6 +208,11 @@ If `REVIEW/review.yaml` exists, run `LEDGER init REVIEW` and continue from
      revising is free.
    - **Use studies the user names.** Do not take the full included list of a published
      review they are trying to reproduce: that puts the answer into the search.
+   - **The named studies are used twice more.** A random pilot judges them first (up to
+     half the sample), and the review page lists where each one ended up, with the ones
+     that were excluded or lost on top. The user knows the answer for these, so they
+     are the quickest test of the criteria. If the user names studies later, run
+     `check_known.py` again with the whole list.
 6. **Show the numbered criteria** that `init` prints, and register them
    (Registration, below).
 7. **Recommend a pilot,** and run it unless the user declines. Give the reason: criteria
@@ -220,7 +225,8 @@ A pilot runs every stage on a small sample, then reviews the decisions with the 
 
 1. **Run the stages with `--limit N --random`:** a seeded random sample, not the lowest
    PMIDs, which are the oldest papers. The same seed gives the same sample, so after an
-   amendment the pilot re-judges the same studies.
+   amendment the pilot re-judges the same studies. Studies the user named (step 5) are
+   judged first, up to half the sample.
    - about 40 abstracts (`--limit 40 --random`);
    - retrieval for the ones that pass;
    - about 8 full texts (`--limit 8 --random`);
@@ -262,15 +268,28 @@ A pilot runs every stage on a small sample, then reviews the decisions with the 
 
 `review_page.py` is how the user checks the judges, in a pilot and after a complete run.
 It is the same page for both. Its tabs follow the pipeline, and within a tab the
-decisions that are final, or that silently drop a study, come first.
+decisions that matter most come first: the studies the user named, then the close calls,
+then the decisions that are final or that silently drop a study.
+
+- **Studies the user named** (step 5 of Planning) lead every tab, and the Overview says
+  where each one ended up: not found, excluded and on which criterion, without a text,
+  or in which maps.
+- **A close call** is a decision one reading could turn: a study included with a
+  criterion left unclear, or excluded on a single criterion with another left unclear;
+  an analysis selected on an unclear criterion, or left out although none failed.
+- **"Worth a look"** on the Overview of a complete run lists patterns across the run,
+  and only those that fire: studies probably lost for want of a full text, exclusions
+  for "no coordinates" where the file had no coordinate table, one study supplying a
+  large share of a target's analyses, clusters that hold peaks from three or fewer
+  studies. Each opens the studies behind it.
 
 | Tab | What it shows | What the user is checking |
 |---|---|---|
-| Overview | one tile per stage with what it kept and dropped; which criterion excluded how many studies; what each target collected and which criteria kept analyses out of it | that the losses are the ones they intended |
-| Abstracts | uncertain decisions, then excludes, then includes | studies dropped wrongly: an abstract exclude is final, an include gets a second look |
-| Full texts | decisions whose quote was not found, then excludes, then includes, then incomplete texts | exclusions, with the quote each rests on shown in the paper |
-| Analyses | included studies from which nothing was selected, then the rest; a table of each analysis × target, with the reason in the row when an analysis is out of every target | studies that silently contribute to no map |
-| Targets | one target at a time: the analyses it selected, by name and study; why the others were left out; the map's clusters | that each map is built from the contrasts they meant |
+| Overview | one tile per stage with what it kept and dropped; the studies the user named; in a complete run, the checks that fired; which criterion excluded how many studies; what each target collected and which criteria kept analyses out of it | that the losses are the ones they intended |
+| Abstracts | named studies, uncertain decisions, close calls, then excludes, then includes | studies dropped wrongly: an abstract exclude is final, an include gets a second look |
+| Full texts | named studies, decisions whose quote was not found, close calls, then excludes, then includes, then incomplete texts | exclusions, with the quote each rests on shown in the paper |
+| Analyses | named studies, close calls, included studies from which nothing was selected, then the rest; a table of each analysis × target, with the reason in the row when an analysis is out of every target | studies that silently contribute to no map |
+| Targets | one target at a time: the analyses it selected, by name and study; why the others were left out; the most frequent words in their names; the map's clusters, and the studies behind the ones few studies support | that each map is built from the contrasts they meant |
 | Findings | agreement per group; disagreements and notes by criterion | what to change |
 
 - **Pilot:** the sample is small, so the user can read everything.
@@ -465,7 +484,8 @@ items remain pending or unavailable, and list the files under `results/`.
 
 **Then offer the review page** (see "The review page"), and say what it is for: checking
 what each map was built from, and auditing a sample of the judges' decisions.
-- **Point the user at the Overview's three "What decided" blocks, and at Targets.** A
+- **Point the user at the Overview's "Worth a look" list and its three "What decided"
+  blocks, and at Targets.** Few users read every decision; these say where to read. A
   criterion that excluded far more than they expected, or a target that collected the
   wrong contrasts, matters more than any single decision.
 - **Report the audit with its denominators:** for each group, how many decisions it

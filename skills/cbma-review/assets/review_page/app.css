@@ -230,3 +230,24 @@ tr.why-row td.ids { white-space: nowrap; }
 
 .notebox { display: grid; gap: 6px; margin-top: 6px; }
 .card .section > h3 { margin-bottom: 4px; font-weight: 600; }
+
+/* named studies and run checks */
+table.plain.named { table-layout: fixed; }
+table.plain.named td { width: 30%; }
+table.plain.named td:first-child { width: 40%; }
+table.plain.named td:nth-child(2) { font-weight: 600; font-size: 13px; }
+table.plain.named .clip { display: block; max-width: 100%; }
+.check-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; width: 100%;
+  text-align: left; background: none; border: 0; border-top: 1px solid var(--line-2); padding: 8px 4px; color: var(--ink);
+  font: inherit; cursor: pointer; }
+.check-row:first-of-type { border-top: 0; }
+.check-row:hover { background: var(--line-2); }
+.check-row .what { display: block; font-weight: 600; }
+.check-row .what::before { content: '⚠ '; color: var(--warn); }
+.check-row .go { color: var(--accent); font-size: 18px; }
+table.plain.thin { table-layout: fixed; margin-top: 12px; }
+table.plain.thin th:first-child { width: 110px; }
+table.plain.thin th:nth-child(2) { width: 90px; }
+table.plain.thin td:first-child { white-space: nowrap; }
+table.plain.thin td:last-child, table.plain.thin th:last-child { padding-left: 16px; }
+table.plain.thin .clip { display: block; max-width: 100%; }

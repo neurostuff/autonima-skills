@@ -206,24 +206,24 @@ async function reload() {
 function viewOverview(main) {
   const ov = S.ov, st = ov.status;
   const a = st.abstract_screening, r = st.fulltext_retrieval, f = st.fulltext_screening, x = st.extraction;
-  const lane = (stage, id) => (ov.lanes[stage].find((l) => l.id === id) || { size: 0 }).size;
   const some = (...xs) => xs.filter(Boolean);
   // Counts are coloured by what happened to the studies: kept, dropped, or undecided.
   const warn = (text) => ({ text: '⚠ ' + text, cls: 'flag' });
   const kept = (text) => ({ text, cls: 'kept' }), dropped = (text) => ({ text, cls: 'dropped' }), unsure = (text) => ({ text, cls: 'unsure' });
-  const inNoMap = lane('selection', 'none_selected'), noCoordinates = (x.extracted || 0) - (x.with_analyses || 0);
+  const close = (stage) => ov.close[stage] && unsure(plural(ov.close[stage], 'close call'));
+  const inNoMap = ov.in_no_map, noCoordinates = (x.extracted || 0) - (x.with_analyses || 0);
   const tiles = [
     { label: 'Abstracts', view: 'abstract', n: a.include + a.uncertain, unit: 'passed', cls: 'kept',
       notes: some(a.uncertain && [kept(`${fmt(a.include)} included`), ', ', unsure(`${fmt(a.uncertain)} uncertain`)],
-        a.exclude && dropped(`${fmt(a.exclude)} excluded`), a.pending && `${fmt(a.pending)} not judged yet`) },
+        a.exclude && dropped(`${fmt(a.exclude)} excluded`), close('abstract'), a.pending && `${fmt(a.pending)} not judged yet`) },
     { label: 'Full texts', view: 'fulltext', n: f.include, unit: 'included', cls: 'kept',
       notes: some(f.exclude && dropped(`${fmt(f.exclude)} excluded`), r.unavailable && `${fmt(r.unavailable)} without text`,
-        f.text_incomplete && `${fmt(f.text_incomplete)} incomplete`, f.pending && `${fmt(f.pending)} not judged yet`) },
+        f.text_incomplete && `${fmt(f.text_incomplete)} incomplete`, close('fulltext'), f.pending && `${fmt(f.pending)} not judged yet`) },
     { label: 'Analyses', view: 'selection', n: x.analyses, unit: 'analyses',
       notes: some(`from ${plural(x.with_analyses, 'study', 'studies')}`,
         noCoordinates > 0 && warn(`${plural(noCoordinates, 'study', 'studies')} without coordinates`),
-        x.pending && `${fmt(x.pending)} not extracted yet`) },
-    { label: 'Targets', view: 'targets', n: lane('selection', 'selected'), unit: 'studies in a map', cls: 'kept',
+        close('selection'), x.pending && `${fmt(x.pending)} not extracted yet`) },
+    { label: 'Targets', view: 'targets', n: ov.in_map, unit: 'studies in a map', cls: 'kept',
       notes: some(inNoMap && warn(`${plural(inNoMap, 'study', 'studies')} in no map`), plural(ov.targets.length, 'target')) },
   ];
   // Where to go next: in a pilot the first stage with decisions left to read, in a complete run
@@ -244,6 +244,31 @@ function viewOverview(main) {
   };
   const page = h('div', { class: 'page' }, h('div', { class: 'flow' }, tiles.map(tile)));
 
+  // The studies the user named: where each ended up, the ones that are not in a map first.
+  if (ov.known.length) {
+    const tone = { bad: 'dropped', warn: 'unsure', ok: 'kept', wait: 'muted' };
+    const inMap = ov.known.filter((k) => k.tone === 'ok').length;
+    add(page, h('div', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', {}, 'Studies you named'),
+        h('span', { class: 'tiny' }, `${fmt(inMap)} of ${fmt(ov.known.length)} in a map`)),
+      (() => {
+        const row = (k) => h('tr', {},
+          h('td', {}, k.view ? h('button', { class: 'btn link plain clip', title: k.title, onclick: () => follow({ view: k.view, pmid: k.pmid }) }, k.title || 'PMID ' + k.pmid)
+            : h('span', { class: 'clip', title: k.title }, k.title || 'PMID ' + k.pmid)),
+          h('td', { class: tone[k.tone] }, k.outcome),
+          h('td', { class: 'small' }, h('span', { class: 'clip', title: k.reason }, k.deciding.map((c) => [critChip(c), ' ']), k.reason)));
+        const out = ov.known.filter((k) => k.tone !== 'ok'), ok = ov.known.filter((k) => k.tone === 'ok');
+        return [out.length ? h('table', { class: 'plain named' }, out.map(row)) : null,
+          ok.length ? h('details', {}, h('summary', { class: 'small' }, `${fmt(ok.length)} in a map`), h('table', { class: 'plain named' }, ok.map(row))) : null];
+      })()));
+  }
+  // Patterns across the run that are worth a look; a check shows only when it fires.
+  if (ov.checks.length) {
+    add(page, h('div', { class: 'card' }, h('h2', {}, 'Worth a look'),
+      ov.checks.map((c) => h('button', { class: 'check-row', onclick: () => follow(c.go) },
+        h('span', {}, h('span', { class: 'what' }, c.text), h('span', { class: 'small muted' }, c.detail)), h('span', { class: 'go' }, '›')))));
+  }
+
   // What decided each screening stage. Bars are shares of the stage's exclusions; "alone" counts
   // the studies no other criterion would have excluded.
   const decided = (stage, total) => {
@@ -253,7 +278,7 @@ function viewOverview(main) {
       h('div', { class: 'card-head' }, h('h2', {}, `What decided ${STAGE_NAME[stage]}`),
         h('span', { class: 'tiny' }, `of ${fmt(total)} excluded; a study can fail several`)),
       crit.map((c) => h('button', { class: 'bar-row', title: `${c.id}: ${c.text}`,
-        onclick: () => { Object.assign(stageUi(stage), { criterion: c.id, cur: null }); go(stage); } },
+        onclick: () => { Object.assign(stageUi(stage), { criterion: c.id, cur: null, only: null }); go(stage); } },
         h('span', { class: 'clamp2' }, critChip(c.id), ' ', c.text),
         h('span', { class: 'n' }, fmt(c.excluded)),
         h('span', { class: 'tiny', title: 'Excluded on this criterion alone: the studies that return if it is wrong.' }, c.alone ? `${fmt(c.alone)} alone` : ''),
@@ -286,12 +311,28 @@ function viewOverview(main) {
   }
 
   if (ov.unavailable.length) {
-    add(page, h('details', { class: 'card' },
+    add(page, h('details', { class: 'card', id: 'unavailable' },
       h('summary', {}, `${plural(ov.unavailable.length, 'study', 'studies')} passed abstract screening but had no full text`),
-      h('p', { class: 'muted small' }, 'Reported as unavailable, not excluded. To add a paper, put it in a local folder and run retrieval again.'),
-      h('ul', { class: 'clean small' }, ov.unavailable.map((it) => h('li', {}, it.title || '(no title)', h('div', { class: 'tiny' }, studyLinks(it)))))));
+      h('p', { class: 'muted small' }, 'Reported as unavailable, not excluded. Abstracts judged "include" come first: they are the likelier to belong. To add a paper, put it in a local folder and run retrieval again.'),
+      h('ul', { class: 'clean small' }, ov.unavailable.map((it) => h('li', {}, it.title || '(no title)',
+        h('div', { class: 'tiny' }, it.abstract === 'uncertain' ? 'abstract uncertain · ' : '', studyLinks(it)))))));
   }
   set(main, page);
+}
+// Open what a check or a named study points at.
+const EVERY = { known: 1e9, close: 1e9, none_selected: 1e9, selected: 1e9 };
+function follow(g) {
+  if (g.anchor) {
+    const el = document.getElementById(g.anchor);
+    if (el) { el.open = true; el.scrollIntoView({ block: 'start' }); }
+  } else if (g.view === 'targets') {
+    Object.assign(targetsUi(), { cur: g.target, row: null, map: true });
+    go('targets');
+  } else {
+    Object.assign(stageUi(g.view), { criterion: '', unreviewed: false, cell: null, cur: g.pmid || null,
+      only: g.pmids ? { label: g.label, pmids: new Set(g.pmids) } : null, caps: g.pmid ? Object.assign({}, EVERY) : {} });
+    go(g.view);
+  }
 }
 function bar(fraction, width) {
   const el = h('span', { class: 'bar' });
@@ -311,7 +352,7 @@ function meter(fraction) {
 function stageUi(stage) {
   // One object per stage, kept across renders: the filter, the current item, how much of each group is shown.
   const ui = S.ui[stage] || (S.ui[stage] = {});
-  for (const [k, v] of Object.entries({ criterion: '', unreviewed: false, caps: {}, cur: null, cell: null })) {
+  for (const [k, v] of Object.entries({ criterion: '', unreviewed: false, caps: {}, cur: null, cell: null, only: null })) {
     if (!(k in ui)) ui[k] = v;
   }
   return ui;
@@ -321,7 +362,8 @@ const reviewed = (stage, it) => (stage === 'selection' ? it.reviewed >= it.n_cel
 function groups(stage) {
   const { items, lanes } = S.data[stage], ui = stageUi(stage);
   return lanes.map((lane) => {
-    let rows = items.filter((it) => it.lane === lane.id && (!ui.criterion || (it.deciding || []).includes(ui.criterion)));
+    let rows = items.filter((it) => it.lane === lane.id && (!ui.criterion || (it.deciding || []).includes(ui.criterion))
+      && (!ui.only || ui.only.pmids.has(it.pmid)));
     if (ui.criterion) rows = rows.filter((it) => it.deciding.length === 1).concat(rows.filter((it) => it.deciding.length > 1));
     const total = rows.length, done = rows.filter((it) => reviewed(stage, it)).length;
     if (ui.unreviewed) rows = rows.filter((it) => !reviewed(stage, it) || it.pmid === ui.cur);
@@ -367,6 +409,10 @@ async function viewStage(main, stage) {
       crits.map((c) => h('option', { value: c, selected: ui.criterion === c }, `${c}: ${data.criteria[c].slice(0, 70)}`)));
     add(filters, sel);
   }
+  if (ui.only) {
+    add(filters, h('div', { class: 'row' }, h('span', { class: 'chip uncertain' }, ui.only.label), h('span', { class: 'spacer' }),
+      h('button', { class: 'btn link small', onclick: () => { ui.only = null; ui.cur = null; render(); } }, 'Show all')));
+  }
   const box = h('input', { type: 'checkbox', id: 'unrev', checked: ui.unreviewed, onchange: (e) => { ui.unreviewed = e.target.checked; render(); } });
   add(filters, h('div', { class: 'row' }, h('label', { for: 'unrev' }, box, ' Hide what I have reviewed'), h('span', { class: 'spacer' }),
     h('span', { class: 'tiny', title: 'Next and previous' }, h('kbd', {}, 'J'), h('kbd', {}, 'K'))));
@@ -397,10 +443,11 @@ function sideItem(stage, it, ui) {
     if (it.disagree) { mark = '✗'; cls = 'disagree'; } else if (reviewed(stage, it)) { mark = '✓'; cls = 'agree'; }
     meta = plural(it.n_analyses, 'analysis', 'analyses')
       + (it.n_selected ? ` · ${it.n_selected} selected` : (it.out_by.length ? ' · ' + it.out_by.join(' ') : ''))
-      + (it.reviewed && !reviewed(stage, it) ? ' · partly reviewed' : '');
+      + (it.close ? ` · ${plural(it.close, 'close call')}` : '') + (it.reviewed && !reviewed(stage, it) ? ' · partly reviewed' : '');
   } else {
     if (it.verdict) { mark = it.verdict.verdict === 'agree' ? '✓' : '✗'; cls = it.verdict.verdict; }
-    meta = it.decision + (it.deciding.length ? ' · ' + it.deciding.join(', ') : '');
+    meta = it.decision + (it.deciding.length ? ' · ' + it.deciding.join(', ') : '')
+      + (it.close.length ? ' · unclear ' + it.close.join(', ') : '');
   }
   return h('button', { class: 'item', 'aria-current': String(it.pmid === ui.cur), onclick: () => { ui.cur = it.pmid; ui.cell = null; render(); } },
     h('span', { class: 'v ' + cls, title: cls ? `You ${cls}d` : 'Not reviewed' }, mark),
@@ -417,6 +464,7 @@ async function paneScreening(pane, stage, it) {
       it.deciding.map((c) => critTag(c, it.criteria[c], texts(c)))),
     it.deciding.map((c) => h('div', { class: 'small muted' }, critChip(c), ' ', texts(c))),
     h('p', { class: 'reason' }, it.reason),
+    it.close.length ? h('p', { class: 'small unsure' }, 'Close call: the judge left unclear ', it.close.map((c) => [critChip(c, texts(c)), ' '])) : null,
     it.flags.map((f) => h('p', { class: 'flag' }, '⚠ ' + f)));
 
   if (stage === 'abstract') {
@@ -478,6 +526,7 @@ const mark = (v) => (v ? h('span', { class: 'v ' + v, title: `You ${v}d` }, v ==
 const breakable = (name) => name.split('_').flatMap((part, i) => (i ? [h('wbr'), '_' + part] : [part]));
 const tableLabel = (t) => (!t || t === 'record' || /^tbl/i.test(t) ? '' : (/^\d+$/.test(t) ? 'Table ' + t : t));
 
+const CLOSE = 'Selected on a criterion marked unclear, or left out although no criterion failed.';
 async function paneSelection(pane, it, ui) {
   const key = 'selection:' + it.pmid;
   if (!S.detail[key]) {
@@ -518,14 +567,15 @@ async function paneSelection(pane, it, ui) {
 
   const read = h('div', { class: 'read wide' });
   add(read, h('h2', {}, it.title || '(no title)'), h('div', { class: 'meta' }, studyLinks(it)),
-    it.lane === 'none_selected' ? h('p', { class: 'flag' }, '⚠ Included at full text, but no analysis was selected for any target, so this study is in no map.') : null);
+    !it.n_selected ? h('p', { class: 'flag' }, '⚠ Included at full text, but no analysis was selected for any target, so this study is in no map.') : null);
   const table = h('table', { class: 'matrix' }, h('tr', {}, h('th', {}, 'Analysis'), targets.map((t) => h('th', {}, breakable(t))), h('th', {})));
   for (const a of d.analyses) {
     const aid = a.analysis_id, row = cellsOf(aid), on = curAid === aid;
     const desc = a.description ? h('div', { class: 'desc', title: 'Select to expand', onclick: (e) => e.currentTarget.classList.toggle('open') }, a.description) : null;
     const name = h('td', { class: 'name' },
       h('button', { class: 'btn link plain', 'aria-expanded': String(on), onclick: () => open(aid, '*') }, a.name || a.table || aid),
-      h('div', { class: 'tiny' }, [tableLabel(a.table), plural(a.n_points || 0, 'peak')].filter(Boolean).join(' · ')), desc);
+      h('div', { class: 'tiny' }, [tableLabel(a.table), plural(a.n_points || 0, 'peak')].filter(Boolean).join(' · '),
+        row.some((c) => c.close) ? h('span', { class: 'unsure', title: CLOSE }, ' · close call') : null), desc);
     let cells;
     if (outOfAll(aid)) {
       cells = h('td', { colspan: targets.length }, h('button', { class: 'cell out wide', 'aria-expanded': String(on), onclick: () => open(aid, '*') },
@@ -550,7 +600,8 @@ async function paneSelection(pane, it, ui) {
           if (!c) return null;
           return h('tr', { class: curTarget === t ? 'on' : null },
             h('td', {}, h('button', { class: 'btn link', 'aria-pressed': String(curTarget === t), onclick: () => { ui.cell = [aid, t]; render(); } }, t)),
-            h('td', {}, h('span', { class: 'chip' + (c.include ? ' include' : '') }, c.include ? 'In' : 'Out')),
+            h('td', {}, h('span', { class: 'chip' + (c.include ? ' include' : '') }, c.include ? 'In' : 'Out'),
+              c.close ? h('span', { class: 'unsure tiny', title: CLOSE }, ' close call') : null),
             h('td', { class: 'ids' }, c.deciding.filter((id) => !shared.includes(id)).map((id) => [critChip(id, texts(t)(id) || ''), ' '])),
             h('td', {}, c.reason), h('td', { class: 'num' }, mark(c.verdict && c.verdict.verdict)));
         })))));
@@ -657,6 +708,8 @@ async function viewTargets(main) {
       !S.ov.pilot && t.studies < 17 ? h('span', { class: 'flag' }, ' · ⚠ few studies for a meta-analysis (17 or more is usual)') : null,
       m ? h('span', { class: 'muted' }, ` · map: ${plural(m.clusters, 'significant cluster')}`) : null,
       m && m.stale ? h('span', { class: 'flag' }, ' · ⚠ fitted before the current selection') : null),
+    t.words.length ? h('p', { class: 'strip small' }, h('span', { class: 'muted' }, 'Most frequent words in their names'),
+      t.words.map((w) => h('span', {}, w.word, ' ', h('span', { class: 'num muted' }, fmt(w.n))))) : null,
     t.left_out ? h('p', { class: 'strip small' }, h('span', { class: 'muted' }, `${fmt(t.left_out)} left out by`),
       t.left_out_by.map((c) => h('span', { title: c.text || '' }, critChip(c.id), ' ', h('span', { class: 'num' }, fmt(c.n)))),
       t.no_criterion ? h('span', { title: 'No criterion failed; the judge gave another reason' }, critChip('other'), ' ', h('span', { class: 'num' }, fmt(t.no_criterion))) : null) : null));
@@ -664,12 +717,18 @@ async function viewTargets(main) {
     h('details', {}, h('summary', {}, 'Criteria'),
       Object.entries(Object.assign({}, d.global, t.criteria)).map(([id, text]) => h('div', { class: 'bar-row small' },
         h('span', {}, critChip(id), ' ', text), h('span', { class: 'n' }, counts[id] ? fmt(counts[id]) : ''), bar((counts[id] || 0) / Math.max(1, t.considered), 120)))),
-    m ? h('details', {}, h('summary', {}, 'The map'),
+    m ? h('details', { open: ui.map || null, ontoggle: (e) => { ui.map = e.target.open; } }, h('summary', {}, 'The map',
+        m.fragile ? h('span', { class: 'flag' }, ` · ${fmt(m.fragile)} of ${fmt(m.clusters)} clusters hold peaks from 3 or fewer studies`) : null),
       h('p', { class: 'small' }, `${m.estimator} with ${m.corrector} correction, fitted on ${m.analyses} analyses from ${plural(m.studies, 'study', 'studies')}.` +
         (m.unknown_space_points ? ` ${plural(m.unknown_space_points, 'peak')} had no stated space and were treated as MNI.` : '')),
-      m.largest.length ? h('table', { class: 'plain narrow' }, h('tr', {}, h('th', {}, 'Largest clusters: peak (x, y, z)'), h('th', { class: 'num' }, 'Peak z'), h('th', { class: 'num' }, 'Size (mm³)')),
+      m.largest.length ? h('table', { class: 'plain narrow' }, h('tr', {}, h('th', {}, 'Largest clusters: peak (x, y, z)'), h('th', { class: 'num' }, 'Peak z'), h('th', { class: 'num' }, 'Size (mm³)'),
+          m.largest[0].studies == null ? null : h('th', { class: 'num', title: 'Studies with a peak inside the cluster' }, 'Studies')),
         m.largest.map((c) => h('tr', {}, h('td', {}, `${Math.round(c.x)}, ${Math.round(c.y)}, ${Math.round(c.z)}`),
-          h('td', { class: 'num' }, Number(c.peak).toFixed(2)), h('td', { class: 'num' }, fmt(c.mm3))))) : null) : null));
+          h('td', { class: 'num' }, Number(c.peak).toFixed(2)), h('td', { class: 'num' }, fmt(c.mm3)),
+          c.studies == null ? null : h('td', { class: 'num' + (c.studies <= 3 ? ' unsure' : '') }, fmt(c.studies))))) : null,
+      m.thin && m.thin.length ? h('table', { class: 'plain thin' }, h('tr', {}, h('th', {}, 'Peak (x, y, z)'), h('th', { class: 'num' }, 'Size (mm³)'), h('th', {}, 'Clusters holding peaks from 3 or fewer studies: the studies')),
+        m.thin.map((c) => h('tr', {}, h('td', {}, `${Math.round(c.x)}, ${Math.round(c.y)}, ${Math.round(c.z)}`), h('td', { class: 'num' }, fmt(c.mm3)),
+          h('td', {}, c.from.length ? null : h('span', { class: 'muted' }, 'No peak inside the cluster, only nearby ones.'), c.from.map((s) => h('div', {}, h('button', { class: 'btn link plain clip', title: s.title, onclick: () => follow({ view: 'selection', pmid: s.pmid }) }, s.title || s.pmid))))))) : null) : null));
 
   if (!rows.length) {
     add(page, h('p', { class: 'empty' }, '⚠ No analysis was selected for this target.'));
@@ -683,7 +742,7 @@ async function viewTargets(main) {
           h('td', {}, h('button', { class: 'rowbtn', 'aria-expanded': String(on), onclick: () => { ui.row = on ? null : key; render(); } },
               h('span', {}, a.name || a.analysis_id), h('span', { class: 'why ' + (on ? '' : 'clip') }, a.reason || 'The judge gave no reason.')),
             on ? h('button', { class: 'btn link small', onclick: () => {
-              Object.assign(stageUi('selection'), { cur: s.pmid, cell: [a.analysis_id, t.name], caps: { none_selected: 1e9, selected: 1e9 }, unreviewed: false, criterion: '' });
+              Object.assign(stageUi('selection'), { cur: s.pmid, cell: [a.analysis_id, t.name], caps: Object.assign({}, EVERY), unreviewed: false, criterion: '', only: null });
               go('selection');
             } }, 'See every analysis of this study') : null),
           h('td', { class: 'num' }, a.n_points == null ? '' : a.n_points),

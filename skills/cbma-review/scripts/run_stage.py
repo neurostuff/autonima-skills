@@ -202,7 +202,8 @@ def main(argv=None) -> int:
     ap.add_argument("--random", action="store_true",
                     help="with --limit: a seeded random sample of the pending items, not the lowest PMIDs "
                          "(which are the oldest papers). The same pending set gives the same sample, so a "
-                         "pilot re-run after an amendment judges the same studies again")
+                         "pilot re-run after an amendment judges the same studies again. Studies the user "
+                         "named (search/known_check.json) come first, up to half the sample")
     ap.add_argument("--seed", type=int, default=0, help="the --random sample's seed (default 0)")
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--rounds", type=int, default=3, help="dispatch rounds per call: the first, plus retries")
@@ -283,8 +284,12 @@ def main(argv=None) -> int:
                 initial = historical or sorted(existing)
             elif args.random:
                 candidates = sorted(rv.pending(args.stage), key=int)
-                initial = sorted(random.Random(args.seed).sample(candidates, min(args.limit, len(candidates))),
-                                 key=int)
+                # Studies the user named are judged in the pilot, up to half of it: the user
+                # knows their answer, so each one tests the criteria. The rest stays random.
+                named = [p for p in candidates if p in ledger.known_studies(review)][:args.limit // 2]
+                rest = [p for p in candidates if p not in named]
+                initial = sorted(named + random.Random(args.seed).sample(
+                    rest, min(args.limit - len(named), len(rest))), key=int)
             else:
                 initial = rv.pending(args.stage)[:args.limit]
             if historical and len(initial) < args.limit:

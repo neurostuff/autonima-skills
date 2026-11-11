@@ -16,12 +16,18 @@ What it writes, all under REVIEW/pilot/ (nothing else in the review changes):
 A verdict never changes a decision: only judges and the ledger decide. Disagreements become a
 protocol amendment, which the user makes (see cbma-review, Registration).
 
-Which decisions it puts first:
-- abstracts: uncertain ones, then excludes (an abstract exclude is final; an include gets a second
-  look at full text), then includes;
-- full texts: decisions whose quote was not found in the paper, then excludes, then includes, then
-  texts judged incomplete;
-- analyses: included studies from which nothing was selected, then the rest.
+Which decisions it puts first, at every stage: the studies the user named as belonging in the
+review (search/known_check.json, written by check_known.py), then
+- abstracts: uncertain ones, close calls, then excludes (an abstract exclude is final; an include
+  gets a second look at full text), then includes;
+- full texts: decisions whose quote was not found in the paper, close calls, then excludes, then
+  includes, then texts judged incomplete;
+- analyses: close calls, included studies from which nothing was selected, then the rest.
+A close call is a decision one reading could turn: a study included with a criterion left unclear,
+or excluded on a single criterion with another left unclear; an analysis selected on an unclear
+criterion, or left out although no criterion failed.
+The Overview also says where each named study ended up and, for a complete run, lists the patterns
+worth a look (`Snapshot.checks`): only the ones that fire.
 Within each group the order is a seeded shuffle, so in a complete run the first N of a group are a
 random sample of it, and agreement on them estimates the group's.
 
@@ -37,6 +43,7 @@ import argparse
 import csv
 import json
 import random
+import re
 import secrets
 import sys
 import time
@@ -57,16 +64,22 @@ ASSET_TYPES = {"index.html": "text/html; charset=utf-8", "app.js": "text/javascr
 MAX_TEXT = 600_000          # characters of a paper's text sent to the page
 MAX_TABLE_ROWS = 80
 
+KNOWN_LANE = ("known", "Studies you named", "You said these belong in the review. Check what the judges did with them.")
 LANES = {
-    "abstract": [("uncertain", "Uncertain", "The abstract did not settle a criterion. These show where a criterion is ambiguous."),
+    "abstract": [KNOWN_LANE, ("uncertain", "Uncertain", "The abstract did not settle a criterion. These show where a criterion is ambiguous."),
+                 ("close", "Close calls", "Excluded on a single criterion, with another left unclear."),
                  ("excluded", "Excluded", "Final at this stage: check for studies that belong."),
                  ("included", "Included", "These go on to full text, where they are judged again.")],
-    "fulltext": [("check", "Needs a look", "A quote the judge relied on was not found in the paper."),
+    "fulltext": [KNOWN_LANE, ("check", "Needs a look", "A quote the judge relied on was not found in the paper."),
+                 ("close", "Close calls", "Included with a criterion left unclear, or excluded on a single criterion with another left unclear."),
                  ("excluded", "Excluded", "Final: an excluded study contributes nothing to any map."),
                  ("included", "Included", "Their analyses go on to selection."),
                  ("incomplete", "Text incomplete", "The file was not the whole article, so nothing was decided. "
                                                    "These go back to retrieval; supply the paper if you can.")],
-    "selection": [("none_selected", "Nothing selected", "Included studies that contribute no analysis to any target."),
+    "selection": [KNOWN_LANE,
+                  ("close", "Close calls", "An analysis was selected on a criterion marked unclear, or left out "
+                                           "although no criterion failed."),
+                  ("none_selected", "Nothing selected", "Included studies that contribute no analysis to any target."),
                   ("selected", "Selected", "Studies with at least one analysis in a target.")],
 }
 
@@ -82,6 +95,31 @@ def deciding(criteria: Optional[dict], excluded: bool) -> List[str]:
         elif kind == "I" and v == "unclear":
             soft.append(k)
     return hard if (excluded and hard) else hard + soft
+
+
+def unclear(criteria: Optional[dict]) -> List[str]:
+    return [k for k, v in (criteria or {}).items() if v == "unclear"]
+
+
+def close_cell(rec: dict) -> bool:
+    """A selection decision that could go the other way: selected on a criterion marked unclear,
+    or left out although no criterion failed."""
+    if rec["include"]:
+        return bool(unclear(rec.get("criteria")))
+    return not [c for c in deciding(rec.get("criteria"), True) if rec["criteria"].get(c) != "unclear"]
+
+
+# Words that say nothing about what an analysis contrasts.
+STOP = set("""the of in and to a an for vs versus with during on at by from than is or as minus contrast contrasts
+effect effects main group groups condition conditions activation activations activity brain region regions areas
+area table response responses greater showing significant analysis analyses whole task all between across compared
+positive negative increased decreased more less correlation cluster clusters results non not""".split())
+
+MISSED = {"not_in_pubmed": "PubMed has no record of it", "outside_dates": "published outside the search dates",
+          "query_does_not_match": "the query does not match it", "not_in_neurostore": "NeuroStore does not index it",
+          "neurostore_no_coordinates": "NeuroStore has no coordinates for it",
+          "neurostore_query_does_not_match": "the query does not match it"}
+FEW_STUDIES = 3             # a cluster holding peaks from this many studies or fewer is reported as fragile
 
 
 def _normalize(text: str) -> Tuple[str, List[int]]:
@@ -135,6 +173,8 @@ class Snapshot:
         self.decisions = {s: rv.valid_decisions(s) for s in pilot.STAGES}
         self.criteria = {s: rv.criteria[s] for s in pilot.STAGES}
         self.targets = list(self.criteria["selection"]["payload"]["targets"])
+        self.known = ledger.known_studies(self.root)
+        self._checks: Optional[List[dict]] = None
         self.verdicts: Dict[tuple, dict] = {}
         for r in ledger.read_jsonl(pilot.feedback_path(rv)):
             if r["criteria_hash"] in rv.accepted_criteria_hashes(r["stage"]):
@@ -186,10 +226,16 @@ class Snapshot:
                 # An incomplete text decides nothing, so no criterion is "deciding" for it.
                 it = dict(self._study(pmid), decision=r["decision"], criteria=r.get("criteria") or {},
                           deciding=[] if r["decision"] == "incomplete" else deciding(r.get("criteria"), excluded),
-                          reason=r.get("reason") or "", flags=[])
+                          reason=r.get("reason") or "", flags=[],
+                          close=[])
+                # A close call: included with a criterion left unclear, or excluded on a single
+                # criterion with another left unclear. Either could go the other way on one reading.
+                if r["decision"] == "include" or (excluded and len(it["deciding"]) == 1):
+                    it["close"] = unclear(r.get("criteria"))
                 if stage == "abstract":
                     it["abstract"] = self.rv.records.get(pmid, {}).get("abstract") or ""
-                    it["lane"] = {"uncertain": "uncertain", "exclude": "excluded"}.get(r["decision"], "included")
+                    it["lane"] = "uncertain" if r["decision"] == "uncertain" else "close" if it["close"] else \
+                        ("excluded" if excluded else "included")
                 else:
                     it["evidence"] = [e for e in r.get("evidence") or [] if isinstance(e, dict)]
                     it["source"] = self.rv.fulltext_index.get(pmid, {}).get("source")
@@ -198,7 +244,10 @@ class Snapshot:
                     if r.get("text_view") == "trimmed":
                         it["flags"].append("judged on the trimmed view")
                     it["lane"] = "incomplete" if r["decision"] == "incomplete" else \
-                        "check" if r.get("ungrounded_evidence") else ("excluded" if excluded else "included")
+                        "check" if r.get("ungrounded_evidence") else "close" if it["close"] else \
+                        ("excluded" if excluded else "included")
+                if pmid in self.known:
+                    it["lane"] = "known"
                 out.append(it)
         else:
             cells = defaultdict(list)
@@ -213,7 +262,9 @@ class Snapshot:
                                 n_selected=len({r["analysis_id"] for r in rows if r["include"]}),
                                 n_cells=len(rows), selected={t: selected.get(t, 0) for t in self.targets},
                                 out_by=[c for c, _ in out_by.most_common(3)],
-                                lane="selected" if selected else "none_selected"))
+                                close=sum(close_cell(r) for r in rows),
+                                lane="known" if pmid in self.known else "close" if any(close_cell(r) for r in rows)
+                                else "selected" if selected else "none_selected"))
         self._items[stage] = self._order(stage, out)
         return self._items[stage]
 
@@ -265,7 +316,7 @@ class Snapshot:
             if p == pmid:
                 cells[aid][target] = {"include": bool(r["include"]), "criteria": r.get("criteria") or {},
                                       "deciding": deciding(r.get("criteria"), not r["include"]),
-                                      "reason": r.get("reason") or "",
+                                      "reason": r.get("reason") or "", "close": close_cell(r),
                                       "verdict": _verdict(self.verdicts.get(("selection", pmid, aid, target)))}
         ft = self.decisions["fulltext"].get((pmid,)) or {}
         return {"pmid": pmid, "fulltext_reason": ft.get("reason"), "has_text": (self.rv.doc_dir(pmid) / "text.md").exists(),
@@ -340,7 +391,12 @@ class Snapshot:
         for row in self.target_counts():
             t = row["name"]
             spec = payload["targets"][t]
+            skip = STOP | set(re.findall(r"[a-z]+", t.lower()))
+            words = Counter(w for xs in by_target[t].values() for x in xs
+                            for w in set(re.findall(r"[a-z]{3,}", str(x["name"] or "").lower())) - skip)
             out.append(dict(row, description=spec.get("description"), criteria=spec["criteria"],
+                            words=[{"word": w, "n": n} for w, n in words.most_common(8) if n > 2],
+                            top_study=max((len(xs) for xs in by_target[t].values()), default=0),
                             by_study=self._shuffled(f"target:{t}", [
                                 dict(self._study(p), analyses=sorted(xs, key=lambda x: str(x["name"])))
                                 for p, xs in sorted(by_target[t].items(), key=lambda kv: int(kv[0]))]),
@@ -358,14 +414,32 @@ class Snapshot:
             out["stale"] = True                 # the map was fitted before the current selection
         space = summary.get("unknown_space") or {}
         out["unknown_space_points"] = space.get("points_with_unknown_space")
+        # NiMARE's FocusCounter table: one row per analysis ("pmid-pmid-analysis"), one column per
+        # cluster, the number of the analysis's peaks inside it.
+        behind: Dict[str, set] = defaultdict(set)
+        for path in (self.root / "results" / "meta" / target).glob("*diag-FocusCounter*.tsv"):
+            with path.open() as fh:
+                for row in csv.DictReader(fh, delimiter="\t"):
+                    study = (row.get("id") or "").split("-")[0]
+                    for name, n in row.items():
+                        if name != "id" and float(n or 0) > 0:
+                            behind[name].add(study)
         clusters = []
         for path in (self.root / "results" / "meta" / target).glob("*tab-clust.tsv"):
             with path.open() as fh:
                 for row in csv.DictReader(fh, delimiter="\t"):
                     if (row.get("Cluster Size (mm3)") or "").strip():
                         clusters.append({"x": row.get("X"), "y": row.get("Y"), "z": row.get("Z"),
-                                         "peak": row.get("Peak Stat"), "mm3": row.get("Cluster Size (mm3)")})
+                                         "peak": row.get("Peak Stat"), "mm3": row.get("Cluster Size (mm3)"),
+                                         "studies": len(behind[row["Cluster ID"]]) if behind else None,
+                                         "from": sorted(behind[row["Cluster ID"]], key=int) if behind else []})
         out["clusters"] = len(clusters)
+        thin = [c for c in clusters if c["studies"] is not None and c["studies"] <= FEW_STUDIES]
+        out["fragile"] = len(thin)
+        out["thin"] = [dict(c, **{"from": [self._study(p) for p in c["from"]]})
+                       for c in sorted(thin, key=lambda c: -float(c["mm3"]))]
+        for c in clusters:
+            del c["from"]
         out["largest"] = sorted(clusters, key=lambda c: -float(c["mm3"]))[:6]
         return out
 
@@ -391,9 +465,13 @@ class Snapshot:
             crit[stage] = [{"id": c, "text": text, "excluded": counts["excluded"][c],
                             "alone": counts["alone"][c], "uncertain": counts["uncertain"][c]}
                            for c, text in self.criteria[stage]["criteria"].items()]
-        unavailable = [dict(self._study(p), status=rv.fulltext_index.get(p, {}).get("status", "not_gathered"))
+        passed_as = {k[0]: r["decision"] for k, r in self.decisions["abstract"].items()}
+        unavailable = [dict(self._study(p), status=rv.fulltext_index.get(p, {}).get("status", "not_gathered"),
+                            abstract=passed_as.get(p))
                        for p in rv.abstract_passed()
                        if rv.fulltext_index.get(p, {}).get("status") not in ("available", "incomplete")]
+        unavailable.sort(key=lambda it: it["abstract"] != "include")       # the likelier ones first
+        selection = self.items("selection")
         # Decisions an amendment or a changed text re-opened: studies still in the review whose
         # earlier decision is no longer current, and which the judges have not decided again.
         superseded = {}
@@ -411,7 +489,130 @@ class Snapshot:
                 "criteria": crit, "targets": self.targets, "target_counts": self.target_counts(),
                 "shared_counts": self.shared_counts(),
                 "unavailable": unavailable, "judges": agents,
+                "in_map": sum(1 for it in selection if it["n_selected"]),
+                "in_no_map": sum(1 for it in selection if not it["n_selected"]),
+                "close": {s: sum(1 for it in self.items(s) if it["close"]) for s in pilot.STAGES},
+                "known": self.known_view(), "checks": [] if pilot_run else self.checks(),
                 "lanes": {s: self.lane_counts(s) for s in pilot.STAGES}, "superseded": superseded}
+
+    def known_view(self) -> List[dict]:
+        """Where each study the user named ended up, the ones that are not in a map first."""
+        out = []
+        ft_included = set(self.rv.fulltext_included())
+        cells = defaultdict(list)
+        for (pmid, aid, target), r in self.decisions["selection"].items():
+            if pmid in self.known:
+                cells[pmid].append(r)
+        for pmid, missed in self.known.items():
+            row = dict(self._study(pmid), tone="wait", view=None, deciding=[], reason="")
+            ab = self.decisions["abstract"].get((pmid,))
+            ft = self.decisions["fulltext"].get((pmid,))
+            status = self.rv.fulltext_index.get(pmid, {}).get("status")
+            if missed is not None:
+                row.update(title=missed.get("title") or "", year=missed.get("year"), journal=missed.get("journal"),
+                           outcome="Not found by the search", tone="bad",
+                           reason=MISSED.get(missed.get("reason"), missed.get("reason") or ""))
+            elif ab is None:
+                row.update(outcome="Abstract not judged yet")
+            elif ab["decision"] == "exclude":
+                row.update(outcome="Excluded at abstract", tone="bad", view="abstract",
+                           deciding=deciding(ab.get("criteria"), True), reason=ab.get("reason") or "")
+            elif ft is None and status not in (None, "available", "incomplete"):
+                row.update(outcome="No full text found", tone="warn")
+            elif ft is None:
+                row.update(outcome=f"Abstract {'uncertain' if ab['decision'] == 'uncertain' else 'included'}; "
+                                   "full text not judged yet", view="abstract")
+            elif ft["decision"] == "incomplete":
+                row.update(outcome="Full text incomplete", tone="warn", view="fulltext", reason=ft.get("reason") or "")
+            elif ft["decision"] == "exclude":
+                row.update(outcome="Excluded at full text", tone="bad", view="fulltext",
+                           deciding=deciding(ft.get("criteria"), True), reason=ft.get("reason") or "")
+            elif pmid not in cells:
+                extracted = self.analyses(pmid)
+                if extracted is not None and not extracted.get("analyses") and pmid in ft_included:
+                    row.update(outcome="Included, but no coordinates were extracted", tone="warn", view="fulltext")
+                else:
+                    row.update(outcome="Included; analyses not selected yet", view="fulltext")
+            else:
+                targets = sorted({r["target"] for r in cells[pmid] if r["include"]}, key=self.targets.index)
+                if targets:
+                    row.update(outcome="In " + ", ".join(targets), tone="ok", view="selection")
+                else:
+                    row.update(outcome="Included, but no analysis was selected", tone="warn", view="selection")
+            out.append(row)
+        rank = {"bad": 0, "warn": 1, "wait": 2, "ok": 3}
+        return sorted(out, key=lambda r: rank[r["tone"]])
+
+    def checks(self) -> List[dict]:
+        """Patterns across a complete run that are worth a look. Only the ones that fire are
+        returned; each says where its studies are."""
+        if self._checks is not None:
+            return self._checks
+        rv, out = self.rv, []
+        ab = {k[0]: r["decision"] for k, r in self.decisions["abstract"].items()}
+        ft = {k[0]: r for k, r in self.decisions["fulltext"].items()}
+        included = sum(r["decision"] == "include" for r in ft.values())
+
+        # Studies that passed abstract screening and never got a usable text. How many of them
+        # would have been included is estimated from the studies of the same abstract decision
+        # that were judged at full text.
+        judged = defaultdict(list)
+        for p, r in ft.items():
+            if r["decision"] in ("include", "exclude"):
+                judged[ab.get(p)].append(r["decision"] == "include")
+        everyone = [x for xs in judged.values() for x in xs]
+        rate = lambda cls: (sum(judged[cls]) / len(judged[cls]) if len(judged[cls]) >= 10
+                            else sum(everyone) / len(everyone) if everyone else 0)
+        missing = [p for p in rv.abstract_passed()
+                   if rv.fulltext_index.get(p, {}).get("status") not in ("available", "incomplete")]
+        incomplete = [p for p, r in ft.items() if r["decision"] == "incomplete"]
+        expected = sum(rate(ab.get(p)) for p in missing + incomplete)
+        if expected >= 3 and expected >= 0.05 * included:
+            out.append({"id": "retrieval",
+                        "text": f"About {round(expected)} studies that belong are probably missing for want of a full text",
+                        "detail": f"{len(missing)} had no text and {len(incomplete)} an incomplete one, and "
+                                  f"{included} studies were included. Estimated from this run's inclusion rates.",
+                        "go": {"anchor": "unavailable"}})
+
+        # Excluded for reporting no coordinates, when no coordinate table was parsed from the
+        # file: a table that is an image or a supplement is invisible to the judge.
+        about = [c for c, text in self.criteria["fulltext"]["criteria"].items()
+                 if re.search(r"coordinat|foci|peak", text, re.I)]
+        blind = []
+        for it in self.items("fulltext"):
+            if it["decision"] == "exclude" and set(it["deciding"]) & set(about):
+                tables = (rv.doc_dir(it["pmid"]) / "tables").glob("*.json")
+                if not any(json.loads(t.read_text()).get("coordinate_candidate") for t in tables):
+                    blind.append(it["pmid"])
+        if len(blind) >= 5:
+            out.append({"id": "tables",
+                        "text": f"{len(blind)} studies were excluded for reporting no coordinates, and their "
+                                "file had no coordinate table",
+                        "detail": "A table that is an image or a supplement never reaches the judge. "
+                                  "Check a few against the papers.",
+                        "go": {"view": "fulltext", "pmids": blind, "label": "No coordinate table in the file"}})
+
+        fragile = []
+        for t in self.targets_view()["targets"]:
+            if t["top_study"] >= 5 and t["top_study"] >= 0.1 * t["analyses"]:
+                top = max(t["by_study"], key=lambda s: len(s["analyses"]))
+                out.append({"id": "concentration:" + t["name"],
+                            "text": f"One study supplies {t['top_study']} of the {t['analyses']} analyses in {t['name']}",
+                            "detail": "Each analysis enters the map as its own experiment.",
+                            "go": {"view": "selection", "pmid": top["pmid"]}})
+            m = t["map"]
+            if m and m["clusters"] and m["fragile"] >= 0.25 * m["clusters"]:
+                fragile.append((m["fragile"], m["clusters"], t["name"]))
+        if fragile:
+            n, of, name = max(fragile)
+            others = [f"{x} of {y} in {t}" for x, y, t in sorted(fragile, reverse=True)[1:]]
+            out.append({"id": "fragile",
+                        "text": f"{n} of the {of} clusters in {name} hold peaks from {FEW_STUDIES} or fewer studies",
+                        "detail": ("Also " + ", ".join(others) + ". " if others else "")
+                                  + "Such a cluster can come or go with one selection decision.",
+                        "go": {"view": "targets", "target": name}})
+        self._checks = out
+        return out
 
     def lane_counts(self, stage: str) -> List[dict]:
         out = []

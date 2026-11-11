@@ -140,9 +140,10 @@ def test_the_overview_knows_a_pilot_and_groups_decisions_into_lanes(review):
     ov = snap.overview()
     assert ov["pilot"] and ov["judged"] == {"abstract": 20, "fulltext": 4, "selection": 2} and ov["records"] == 30
     lanes = {s: {ln["id"]: ln["size"] for ln in ov["lanes"][s]} for s in ov["lanes"]}
-    assert lanes["abstract"] == {"uncertain": 2, "excluded": 14, "included": 4}
-    assert lanes["fulltext"] == {"check": 1, "excluded": 0, "included": 2, "incomplete": 1}
-    assert lanes["selection"] == {"none_selected": 1, "selected": 1}
+    assert lanes["abstract"] == {"known": 0, "uncertain": 2, "close": 0, "excluded": 14, "included": 4}
+    assert lanes["fulltext"] == {"known": 0, "check": 1, "close": 0, "excluded": 0, "included": 2, "incomplete": 1}
+    assert lanes["selection"] == {"known": 0, "close": 0, "none_selected": 1, "selected": 1}
+    assert ov["in_map"] == 1 and ov["in_no_map"] == 1 and ov["known"] == [] and ov["checks"] == []
     by_id = {c["id"]: c for c in ov["criteria"]["abstract"]}
     assert by_id["I2"]["excluded"] == 14 and by_id["I2"]["uncertain"] == 2 and by_id["I1"]["excluded"] == 0
     # Uncertain first, then excluded, then included; an incomplete text names no deciding criterion.
@@ -286,3 +287,66 @@ def test_reopened_decisions_are_reported_not_shown(review):
     (review / "review.yaml").write_text((review / "review.yaml").read_text().replace("Task fMRI", "Task fMRI or PET"))
     ov = page.Snapshot(review).overview()
     assert ov["judged"]["abstract"] == 0 and ov["superseded"]["abstract"] == 20
+
+
+def _rewrite(path, change):
+    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    _write(path, [change(r) or r for r in rows])
+
+
+def test_close_calls_are_decisions_that_one_unclear_criterion_could_turn(review):
+    def abstract(r):
+        if r["pmid"] == "10000007":                     # excluded on I2 alone, with E1 left unclear
+            r["criteria"]["E1"] = "unclear"
+        if r["pmid"] == "10000008":                     # excluded on two criteria: not close
+            r["criteria"].update(I1="not_met", E1="unclear")
+    _rewrite(review / "decisions" / "abstract.jsonl", abstract)
+
+    def selection(r):
+        if r["analysis_id"] == "10000001-0" and r["target"] == "food":
+            r["criteria"]["I1"] = "met"                 # left out although no criterion failed
+    _rewrite(review / "decisions" / "selection.jsonl", selection)
+    snap = page.Snapshot(review)
+    close = [it for it in snap.items("abstract") if it["lane"] == "close"]
+    assert [(it["pmid"], it["close"]) for it in close] == [("10000007", ["E1"])]
+    assert snap.overview()["close"] == {"abstract": 1, "fulltext": 0, "selection": 1}
+    study = [it for it in snap.items("selection") if it["pmid"] == "10000001"][0]
+    assert study["lane"] == "close" and study["close"] == 1
+    cells = snap.selection_detail("10000001")["cells"]["10000001-0"]
+    assert cells["food"]["close"] and not cells["drug"]["close"]
+    # The counts on the Overview no longer follow the lanes.
+    assert snap.overview()["in_map"] == 1 and snap.overview()["in_no_map"] == 1
+
+
+def test_studies_the_user_named_get_their_own_group_and_say_where_they_ended(review):
+    (review / "search" / "known_check.json").write_text(json.dumps({
+        "known": 6, "found": ["10000000", "10000001", "10000002", "10000010", "10000025"],
+        "missed": [{"pmid": "99", "title": "Unseen", "reason": "query_does_not_match"}]}))
+    snap = page.Snapshot(review)
+    rows = {k["pmid"]: k for k in snap.overview()["known"]}
+    assert [k["tone"] for k in snap.overview()["known"]] == ["bad", "bad", "bad", "warn", "wait", "ok"]
+    assert rows["99"]["outcome"] == "Not found by the search" and rows["99"]["reason"] == "the query does not match it"
+    assert rows["10000010"]["outcome"] == "Excluded at abstract" and rows["10000010"]["deciding"] == ["I2"]
+    assert rows["10000002"]["outcome"] == "Excluded at full text" and rows["10000002"]["view"] == "fulltext"
+    assert rows["10000001"]["outcome"] == "Included, but no analysis was selected"
+    assert rows["10000025"]["outcome"] == "Abstract not judged yet"
+    assert rows["10000000"]["outcome"] == "In food, drug" and rows["10000000"]["view"] == "selection"
+    # Named studies lead each stage, whatever was decided.
+    assert [it["pmid"] for it in snap.items("abstract") if it["lane"] == "known"] and \
+        {it["pmid"] for it in snap.items("abstract") if it["lane"] == "known"} == {"10000000", "10000001", "10000002", "10000010"}
+    assert snap.items("fulltext")[0]["lane"] == "known" and snap.items("selection")[0]["lane"] == "known"
+
+
+def test_a_complete_run_reports_only_the_checks_that_fire(review):
+    snap = page.Snapshot(review)
+    assert [c["id"] for c in snap.checks()] == []
+    # One study now supplies all six analyses selected for a target.
+    rows = [json.loads(line) for line in (review / "decisions" / "selection.jsonl").read_text().splitlines()]
+    extra = [dict(rows[0], analysis_id=f"10000000-{i}", include=True) for i in range(3, 7)]
+    snap = page.Snapshot(review)
+    for r in extra:
+        snap.decisions["selection"][(r["pmid"], r["analysis_id"], r["target"])] = r
+    checks = {c["id"]: c for c in snap.checks()}
+    assert list(checks) == ["concentration:food"]
+    assert checks["concentration:food"]["go"] == {"view": "selection", "pmid": "10000000"}
+    assert "6 of the 6" in checks["concentration:food"]["text"]
