@@ -5,6 +5,10 @@
                                    --verdict agree|disagree [--criterion ID ...] [--note "..."]
     python pilot.py summary REVIEW
 
+The review page (review_page.py) is the usual way to do this: the user reads and judges the
+decisions there, and their verdicts land in the same feedback file. `sheet` and `record` are the
+fallback when no browser can be opened.
+
 A pilot judges a small set (`run_stage.py --limit N`) before the full run. Criteria rarely
 survive first contact with real papers, and an amendment after a pilot re-opens only the
 pilot's decisions, so this is where editing them is cheap.
@@ -136,11 +140,16 @@ def _current(rv: "ledger.Review", stage: str, pmid: str, analysis: Optional[str]
     return rv.valid_decisions(stage).get(key)
 
 
-def cmd_record(rv: "ledger.Review", stage: str, pmid: str, verdict: str, criteria: List[str],
-               note: Optional[str], analysis: Optional[str] = None, target: Optional[str] = None) -> dict:
+def verdict_row(rec: Optional[dict], stage: str, pmid: str, verdict: str, criteria: List[str],
+                note: Optional[str], analysis: Optional[str] = None, target: Optional[str] = None,
+                via: str = "agent") -> dict:
+    """The feedback row for one verdict on one current decision, validated. `via` says who typed it:
+    "agent" (pilot.py record, the agent transcribing the user's words) or "page" (the user, in the
+    review page)."""
+    if verdict not in ("agree", "disagree"):
+        raise ledger.LedgerError("a verdict is agree or disagree")
     if stage == "selection" and not (analysis and target):
         raise ledger.LedgerError("a selection verdict names the --analysis and the --target")
-    rec = _current(rv, stage, pmid, analysis, target)
     if rec is None:
         raise ledger.LedgerError(f"no current {stage} decision for {pmid}"
                                  + (f" {analysis} x {target}" if stage == "selection" else ""))
@@ -150,11 +159,17 @@ def cmd_record(rv: "ledger.Review", stage: str, pmid: str, verdict: str, criteri
         raise ledger.LedgerError(f"unknown criteria {unknown}; this decision has {sorted(known)}")
     if verdict == "disagree" and not (criteria or note):
         raise ledger.LedgerError("a disagreement needs --criterion or --note: what the judge got wrong")
-    row = {"stage": stage, "pmid": pmid, "analysis_id": analysis, "target": target, "verdict": verdict,
-           "criteria": criteria, "note": note,
-           "judged": rec["decision"] if stage != "selection" else ("include" if rec["include"] else "exclude"),
-           "criteria_hash": rec["criteria_hash"], "protocol_version": rec.get("protocol_version"),
-           "recorded_at": ledger.now()}
+    return {"stage": stage, "pmid": pmid, "analysis_id": analysis, "target": target, "verdict": verdict,
+            "criteria": criteria, "note": note,
+            "judged": rec["decision"] if stage != "selection" else ("include" if rec["include"] else "exclude"),
+            "criteria_hash": rec["criteria_hash"], "protocol_version": rec.get("protocol_version"),
+            "recorded_at": ledger.now(), "via": via}
+
+
+def cmd_record(rv: "ledger.Review", stage: str, pmid: str, verdict: str, criteria: List[str],
+               note: Optional[str], analysis: Optional[str] = None, target: Optional[str] = None) -> dict:
+    row = verdict_row(_current(rv, stage, pmid, analysis, target), stage, pmid, verdict, criteria, note,
+                      analysis, target)
     ledger.append_jsonl(feedback_path(rv), [row])
     return row
 
@@ -164,6 +179,24 @@ def _criteria_text(rv: "ledger.Review", stage: str) -> dict:
         return rv.criteria[stage]["criteria"]
     payload = rv.criteria["selection"]["payload"]
     return {"global": payload["global"], "targets": {n: t["criteria"] for n, t in payload["targets"].items()}}
+
+
+def notes_path(rv: "ledger.Review") -> Path:
+    return rv.root / "pilot" / "criterion_notes.jsonl"
+
+
+def criterion_notes(rv: "ledger.Review") -> dict:
+    """The user's latest note on each criterion, per stage: what the criterion should say. Notes
+    made under earlier criteria are left out, as stale verdicts are."""
+    out: dict = {}
+    for r in ledger.read_jsonl(notes_path(rv)):
+        if r["criteria_hash"] not in rv.accepted_criteria_hashes(r["stage"]):
+            continue
+        if r.get("note"):
+            out.setdefault(r["stage"], {})[r["criterion"]] = r["note"]
+        else:
+            out.get(r["stage"], {}).pop(r["criterion"], None)
+    return {k: v for k, v in out.items() if v}
 
 
 def cmd_summary(rv: "ledger.Review") -> dict:
@@ -192,6 +225,9 @@ def cmd_summary(rv: "ledger.Review") -> dict:
             entry["excludes_checked"] = sum(r["judged"] == "exclude" for r in live)
             entry["excludes_wrongly_dropped"] = sum(r["judged"] == "exclude" and r["verdict"] == "disagree"
                                                     for r in live)
+        notes = criterion_notes(rv).get(stage)
+        if notes:
+            entry["criterion_notes"] = notes
         if stale:
             entry["stale"] = len(stale)
             entry["stale_note"] = "made under an earlier protocol version; those decisions were re-opened"

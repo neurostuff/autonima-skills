@@ -226,36 +226,64 @@ A pilot runs every stage on a small sample, then reviews the decisions with the 
    - about 8 full texts (`--limit 8 --random`);
    - extraction, or the NeuroStore records and `import-analyses`;
    - selection for the included studies.
-2. **Review it with the user, one stage at a time,** abstract first.
-   - Write the stage's sheet:
+2. **Open the review page.** The user reads and judges the decisions there, not in chat.
 
-     ```bash
-     PYTHON SKILLS/cbma-review/scripts/pilot.py sheet REVIEW --stage <abstract|fulltext|selection>
-     ```
+   ```bash
+   PYTHON SKILLS/cbma-review/scripts/review_page.py REVIEW
+   ```
 
-     It lists each decision with its reason, its criteria and, at full text, its quoted
-     evidence. At the abstract stage it shows every include and uncertain, and a sample of
-     the excludes. Without known studies, recall cannot be measured, so check the excludes
-     for studies that belong.
-   - Show the decisions to the user in groups of about five, and ask whether they agree.
-   - Record each verdict as the user gives it:
-
-     ```bash
-     PYTHON SKILLS/cbma-review/scripts/pilot.py record REVIEW --stage <stage> --pmid <pmid> \
-         [--analysis <id> --target <name>] --verdict agree|disagree [--criterion <ID>] [--note "<their words>"]
-     ```
-
-     A verdict never changes a decision.
-3. **Turn the disagreements into edits.** Run `pilot.py summary REVIEW`. It counts
-   agreement per stage and groups the disagreements by criterion. Propose one edit per
-   criterion, in the criterion's own words, and show which pilot decisions it would
-   change.
+   - **Run it in the background.** It serves one page on this machine, opens it in the
+     user's browser, and prints one JSON line. Then tell the user the page is open, and
+     wait: do not ask about decisions in chat meanwhile.
+   - **If `opened_browser` is false,** no browser could be opened from here. Give the
+     user the `open_this` link, or open it in your harness's own browser pane.
+   - **What the user does there.** They read each decision with its evidence: the full
+     abstract, the judge's quotes in their paragraphs, the tables, the analyses each
+     target collects. They mark agree or disagree, name the criterion that was
+     misapplied, and can note what a criterion should say. See "The review page" below.
+   - **A verdict never changes a decision.**
+   - **When the user clicks "Finish review",** the process exits and prints the findings
+     as JSON: agreement per stage and group, and the disagreements and notes by
+     criterion. They are also in `REVIEW/pilot/findings.md`.
+3. **Turn the findings into edits.** Propose one edit per criterion the user disagreed
+   on or noted, in the criterion's own words, starting from their note when they left
+   one. Show which pilot decisions each edit would change.
+   - **Read a paper yourself** only to draft an edit, never to overrule a judge.
+   - **No browser at all** (a remote shell): fall back to `pilot.py sheet`, `record` and
+     `summary`, which do the same in files and chat.
 4. **Amend, or continue.**
    - **The user has edits:** the pilot judged items, so this is an amendment. Give them
      the `amend` command (Registration, below) with the edits in `review.yaml`, then
      re-run the pilot's re-opened decisions and review those again.
    - **No edits:** the full run continues under the same protocol version, and the
      pilot's decisions stand.
+
+## The review page
+
+`review_page.py` is how the user checks the judges, in a pilot and after a complete run.
+It is the same page for both. Its tabs follow the pipeline, and within a tab the
+decisions that are final, or that silently drop a study, come first.
+
+| Tab | What it shows | What the user is checking |
+|---|---|---|
+| Overview | one tile per stage with what it kept and dropped; which criterion excluded how many studies; what each target collected and which criteria kept analyses out of it | that the losses are the ones they intended |
+| Abstracts | uncertain decisions, then excludes, then includes | studies dropped wrongly: an abstract exclude is final, an include gets a second look |
+| Full texts | decisions whose quote was not found, then excludes, then includes, then incomplete texts | exclusions, with the quote each rests on shown in the paper |
+| Analyses | included studies from which nothing was selected, then the rest; a table of each analysis × target, with the reason in the row when an analysis is out of every target | studies that silently contribute to no map |
+| Targets | one target at a time: the analyses it selected, by name and study; why the others were left out; the map's clusters | that each map is built from the contrasts they meant |
+| Findings | agreement per group; disagreements and notes by criterion | what to change |
+
+- **Pilot:** the sample is small, so the user can read everything.
+- **Complete run:** each group lists a random sample first (a seeded shuffle), so the
+  share the user agrees with estimates the whole group. They can filter by the
+  criterion that decided, and ask for more of any group.
+- **The page reads the review; it writes only `REVIEW/pilot/`:** the verdicts
+  (`feedback.jsonl`, marked `via: page`), notes on criteria, and `findings.md`.
+- **It stops** when the user finishes, or after three hours without a request. If the
+  judges run a stage while it is open, the user selects Reload.
+- **Do not open the page's link yourself to enter verdicts.** The verdicts are the
+  user's. To record something they told you in chat, use `pilot.py record`, which marks
+  it `via: agent`.
 
 ## Registration
 
@@ -435,6 +463,19 @@ A stage runner does these and reports them. Without one, do them yourself.
 Report the final `results/prisma.json` counts to the user. Name every stage where
 items remain pending or unavailable, and list the files under `results/`.
 
+**Then offer the review page** (see "The review page"), and say what it is for: checking
+what each map was built from, and auditing a sample of the judges' decisions.
+- **Point the user at the Overview's three "What decided" blocks, and at Targets.** A
+  criterion that excluded far more than they expected, or a target that collected the
+  wrong contrasts, matters more than any single decision.
+- **Report the audit with its denominators:** for each group, how many decisions it
+  has, how many the user reviewed, and how many they agreed with. A sample of 10
+  excludes says little about 400; say so.
+- **A disagreement is not a correction.** If the user wants a decision changed, the way
+  is a criterion edit: an amendment, which re-opens every decision of that stage. Give
+  them that count before they choose. If they choose not to amend, the disagreements
+  stay in the record as the audit's result.
+
 ## Layout of REVIEW (for orientation; the scripts create it)
 
 ```
@@ -446,6 +487,7 @@ docs/<pmid>/                normalized text.md, tables/<id>.json, meta.json
 work/<stage>/batch_*.json   batches waiting for judges; judge_responses/ per attempt
 decisions/<stage>.jsonl     accepted decisions (append-only; the ledger writes these)
 analyses/<pmid>.json        accepted, verified coordinate extractions
+pilot/                      the user's review: feedback.jsonl, criterion_notes.jsonl, findings.md
 results/                    prisma.json, criteria.json, nimads/, meta/
 ```
 

@@ -79,10 +79,15 @@ know studies that belong, it checks the search finds them.
 
 After registration it recommends a **pilot:**
 1. It runs every stage on a random sample: about 40 abstracts and 8 full texts.
-2. It walks you through the decisions (`scripts/pilot.py`), recording where you agree.
+2. It opens the **review page** in your browser (`scripts/review_page.py`). You read each
+   decision with its evidence, and mark where you disagree and on which criterion.
 3. It turns your disagreements into proposed criteria edits.
 
 Edits after a pilot are amendments, and they re-open only the pilot's decisions.
+
+The same page reviews a **complete run:** where studies were lost and on which criterion,
+what each target's map was built from, and a random sample of each group of decisions to
+audit. It runs on your machine only, and your verdicts never change a decision.
 
 Once you confirm the criteria, the agent registers them as protocol v1. From the first
 judgment on, the agent cannot change them. You amend them yourself, in a terminal, with
