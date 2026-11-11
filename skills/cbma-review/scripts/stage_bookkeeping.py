@@ -56,9 +56,10 @@ def eligible_batches(batches, pending, attempts, maximum, state_dir):
 def provider_blocked(error):
     # Claude Code says "You've hit your session limit · resets ..."; it was not matched, so the
     # runner kept dispatching through two session limits (the Haiku social and decision_making
-    # runs: 216 and 728 refused calls), each counted against the study's attempt cap.
+    # runs: 216 and 728 refused calls), each counted against the study's attempt cap. "You've hit
+    # your 5-hour limit" then slipped past "[a-z ]*" (471 refused selection calls in a pilot).
     return bool(re.search(r'\b429\b|rate[_ -]?limit|usage limit|session limit|weekly limit|'
-                          r'hit your [a-z ]*limit|quota|'
+                          r'hit your [\w -]*limit|quota|'
                           # "Failed to authenticate: OAuth session expired" when the CLI's login lapsed.
                           r'authenticat|oauth|not logged in|/login|unauthorized|HTTP (?:401|403)|'
                           r'insufficient credits',

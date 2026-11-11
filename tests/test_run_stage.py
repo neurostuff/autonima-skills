@@ -270,6 +270,8 @@ def test_a_session_limit_stops_dispatch_and_refunds_the_attempt(tmp_path, capsys
     bookkeeping = importlib.import_module("stage_bookkeeping")
     assert bookkeeping.provider_blocked("ValueError: You've hit your session limit · resets 1:10am")
     assert bookkeeping.provider_blocked("You've hit your weekly limit")
+    # The digit and the hyphen were not matched: 471 refused selection calls in the decision_making pilot.
+    assert bookkeeping.provider_blocked("You've hit your 5-hour limit · resets 9:50pm (America/Chicago)")
     # An expired CLI login refused every call of a pilot and used up all 49 studies' attempts.
     assert bookkeeping.provider_blocked("Failed to authenticate: OAuth session expired and could not be refreshed")
     assert not bookkeeping.provider_blocked("no completed judgments; leave pending")
