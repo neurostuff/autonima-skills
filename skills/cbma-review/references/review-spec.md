@@ -10,11 +10,16 @@ objective: >                    # REQUIRED. What the meta-analysis is for; shown
 
 search:
   query: '(schizophrenia[tiab]) AND ("working memory"[tiab]) AND (fMRI[tiab] OR "functional magnetic resonance"[tiab])'
-  date_from: 2000/01/01         # optional, publication date, YYYY/MM/DD
-  date_to: 2025/12/31           # optional
+  date_from: 2000/01/01         # optional, publication date, YYYY/MM/DD; leave both out for all years
+  date_to: 2025/12/31           # optional (the default: no limit)
   pmids: ["12345678"]           # optional; unioned with the query results
   pmids_file: seeds.txt         # optional; one PMID per line, relative to the review folder
   email: you@example.org        # recommended; NCBI asks tools to identify a contact
+  # neurostore:                 # NeuroStore finds the candidates (neurostore skill); `query` above is
+  #                             # translated for it, or give neurostore.query in NeuroStore's syntax instead
+  #   search_full_text: false   # with NeuroStore, leave imaging-method terms out of `query`
+  #   data_type: coordinate
+  #   snapshot: null
 
 screening:
   abstract:                     # permissive: exclude only when the abstract clearly fails
@@ -52,6 +57,8 @@ extraction:
   drop_unverified: true         # default true: export only points found in their table row
   instructions: ""              # optional, appended to the extraction skill
   records: /data/pondie/records # optional: records mode, see below
+  # neurostore: {}              # instead of `records`: NeuroStore's extracted analyses (neurostore skill);
+  #                             # {fallback: judged} also has judges extract the studies NeuroStore lacks
 
 selection:                      # analysis-level selection for each meta-analytic target
   global:                       # apply to every target; become GI1.., GE1..
@@ -75,7 +82,14 @@ meta:
   corrector: fdr                # fdr | montecarlo | bonferroni
   estimator_args: {}
   corrector_args: {}
+  unknown_space: mni            # mni (default) | exclude
 ```
+
+`meta.unknown_space` covers points whose paper never states a coordinate space. The
+default fits them as MNI, as NiMARE and autonima do. `exclude` leaves every analysis
+with such a point out of the fit. Leave the key out to take the default. Like every
+`review.yaml` key, it is part of the registered protocol, so changing it after the
+first judgment is an amendment.
 
 ## Trimmed full text
 
@@ -105,8 +119,8 @@ over 1,802 documents from five reviews).
 
 ## Records mode
 
-Pre-extracted records (for example Pondie's) can stand in for full text and for
-extraction:
+Pre-extracted records (for example Pondie's, or NeuroStore's with
+`extraction.neurostore`) can stand in for full text and for extraction:
 - **Full text:** add the records' text files as a `local` source with `format: text`.
   Full-text screening then reads the record.
 - **Extraction:** set `extraction.records` to the folder of `<pmid>.analyses.json`
@@ -157,3 +171,30 @@ Every decision stores two hashes, and it stays valid only while both still match
 
 Nothing else re-opens a decision. Re-running a stage after a change batches only
 the re-opened items.
+
+## Registration and amendments
+
+`review.yaml` takes effect only once registered (`ledger.py register REVIEW`). Each
+registration or amendment writes the next `protocol/vNNN.json`, holding:
+- the file's text;
+- every stage's criteria hash;
+- the judges' effort and the workspace's `judge_*.json` settings;
+- the installed package's lock;
+- the hash of the version before it.
+
+Every decision records the version it was judged under. Batching, ingesting and
+exporting refuse while the live protocol differs from the latest version, and the
+refusal names what differs. Comments in `review.yaml` are not part of it; every
+other change is.
+
+| When | How the change is registered |
+|---|---|
+| nothing has been judged yet | `ledger.py register REVIEW [--reason ...]`, run by the agent once the user confirms |
+| anything has been judged, a pilot included | `ledger.py amend REVIEW --reason "..."`, run by the user in a terminal: it shows the difference and the decisions it re-opens, and asks for typed confirmation |
+
+An amendment re-opens decisions as the table above describes; decisions it does not
+re-open stay valid, under the version that made them. `status` and the NiMADS export
+list every version with its kind, reason, time and the number of judgments it made.
+
+This is a guardrail and an audit trail. A local file cannot prove when it was
+written; a protocol registered on Neurosynth Compose can.

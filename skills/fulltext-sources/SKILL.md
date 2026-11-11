@@ -33,9 +33,9 @@ fulltext:
 
 `elsevier` is the ScienceDirect full-text API's XML, as elsevier_coordinate_extractor
 saves it (`<pmid>/article.xml`). Auto-detection recognizes it. It is parsed by that
-package, which needs lxml and pandas:
-`pip install lxml pandas && pip install --no-deps -e ~/repos/elsevier_coordinate_extractor`.
-Without it, a source declared `format: elsevier` stops the run before anything is
+package. The workspace environment that `install.sh` builds includes it, from the
+package's `elsevier` dependency group, pinned in `uv.lock`; `ledger.py check` confirms it
+imports. Without it, a source declared `format: elsevier` stops the run before anything is
 gathered.
 
 ### Source order
@@ -66,15 +66,15 @@ local source go through full-text screening like any other.
 
 1. **Check the mapping before a long run** (it does not download anything):
    ```bash
-   python SKILLS/fulltext-sources/scripts/gather_fulltext.py REVIEW --index-only
+   PYTHON SKILLS/fulltext-sources/scripts/gather_fulltext.py REVIEW --index-only
    ```
    It reports, per local source, the files mapped, the PMIDs that are in the
    search, and some unmapped examples. Fix `id_from` and `regex` until the numbers
    look right.
 2. **Gather the studies that passed abstract screening:**
    ```bash
-   python SKILLS/cbma-review/scripts/ledger.py needs-fulltext REVIEW
-   python SKILLS/fulltext-sources/scripts/gather_fulltext.py REVIEW --pmids-file REVIEW/fulltext/needed.txt
+   PYTHON SKILLS/cbma-review/scripts/ledger.py needs-fulltext REVIEW
+   PYTHON SKILLS/fulltext-sources/scripts/gather_fulltext.py REVIEW --pmids-file REVIEW/fulltext/needed.txt
    ```
 3. **Report the outcomes** it prints (available, incomplete and unavailable, by
    source) to the user.
@@ -104,5 +104,5 @@ extraction work around it.
 
 Individual files can be normalized for debugging:
 ```bash
-python SKILLS/fulltext-sources/scripts/docnorm.py FILE --pmid 12345678 --out /tmp/docs
+PYTHON SKILLS/fulltext-sources/scripts/docnorm.py FILE --pmid 12345678 --out /tmp/docs
 ```

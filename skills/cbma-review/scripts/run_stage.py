@@ -1,6 +1,6 @@
 """Run one judged stage mechanically: batches, one headless judge per batch, ingest, retries.
 
-    python run_stage.py REVIEW --stage fulltext --model claude-opus-5-5 \\
+    python run_stage.py REVIEW --stage fulltext --model claude-sonnet-5-5 \\
         [--harness claude|codex] [--size 2] [--limit N] [--parallel 8] [--time-budget 540]
 
 Each batch is judged by a fresh tool-free session of the harness's CLI: `claude -p`, or
@@ -10,7 +10,8 @@ output format for unchanged validation.
 
 Each judge's reasoning effort is the `effort:` line of its agent definition, read from the
 workspace's `.claude/agents/` (beside the review folder) when it has one, and otherwise
-from the package's own `agents/`.
+from the package's own `agents/`. Efforts and the judge setting files are part of the
+registered protocol: the ledger refuses to batch or ingest while they differ from it.
 
 The script is resumable, and it stops at --time-budget seconds. It stops launching
 judges well before then and waits for those running, so a caller whose commands time
@@ -45,6 +46,7 @@ import argparse
 import concurrent.futures as cf
 import json
 import os
+import random
 import re
 import shlex
 import socket
@@ -59,12 +61,10 @@ import ledger  # noqa: E402
 import single_response  # noqa: E402
 import stage_bookkeeping as bookkeeping  # noqa: E402
 
-JUDGE = {"abstract": "cbma-abstract-screener", "fulltext": "cbma-fulltext-screener",
-         "extraction": "cbma-extractor", "selection": "cbma-selector"}
+JUDGE = ledger.JUDGES
 SIZE = {"abstract": 25, "fulltext": 2, "extraction": 1, "selection": 1}
 # The CLI each harness runs, and the name its decisions are recorded under.
 HARNESS = {"claude": "claude-code", "codex": "codex-cli"}
-PACKAGE_AGENTS = Path(ledger.SKILLS_ROOT).parent / "agents"
 
 
 def judge_thinking_budget(agents_dir: Path, model: str, stage: str) -> Optional[int]:
@@ -82,14 +82,9 @@ def judge_thinking_budget(agents_dir: Path, model: str, stage: str) -> Optional[
     return budget
 
 
-def agent_effort(agents_dir: Path, judge: str) -> str:
-    m = re.search(r"^effort:\s*(\S+)", (agents_dir / f"{judge}.md").read_text(), re.M)
-    return m.group(1) if m else "default"
-
-
 def judge_one(batch: Path, stage: str, args, skills: Path, timeout=None) -> dict:
     started = time.monotonic()
-    effort = agent_effort(args.agents_dir, JUDGE[stage])
+    effort = ledger.judge_effort(args.review_dir, stage)
     directory = single_response.new_attempt(batch, args.harness, args.model, effort)
     recovery = None
     timeout = timeout if timeout is not None else args.judge_timeout
@@ -190,35 +185,43 @@ def take_lock(work: Path, stage: str) -> Tuple[Path, Optional[dict]]:
     raise StageBusy(stale)                                  # unreachable: the loop returns or raises
 
 
+# The judges' default model in Claude Code: a judge reads one batch and returns one JSON
+# response, and Sonnet does that well at a fraction of Opus's cost. The orchestrator's own model
+# is never the default: the emotion regulation pilot ran every judge on Opus, unasked.
+DEFAULT_CLAUDE_JUDGE = "claude-sonnet-5-5"
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("review_dir", type=Path)
     ap.add_argument("--stage", choices=list(JUDGE), required=True)
-    ap.add_argument("--model", required=True, help="the judges' model id, recorded with every decision")
+    ap.add_argument("--model", help="the judges' model id, recorded with every decision (default for "
+                                    f"--harness claude: {DEFAULT_CLAUDE_JUDGE}; required for codex)")
     ap.add_argument("--size", type=int)
     ap.add_argument("--limit", type=int, help="batch at most this many items in the first round (pilots)")
+    ap.add_argument("--random", action="store_true",
+                    help="with --limit: a seeded random sample of the pending items, not the lowest PMIDs "
+                         "(which are the oldest papers). The same pending set gives the same sample, so a "
+                         "pilot re-run after an amendment judges the same studies again")
+    ap.add_argument("--seed", type=int, default=0, help="the --random sample's seed (default 0)")
     ap.add_argument("--parallel", type=int, default=8)
     ap.add_argument("--rounds", type=int, default=3, help="dispatch rounds per call: the first, plus retries")
     ap.add_argument("--max-attempts", type=int, default=3, help="persistent attempts per unchanged item")
     ap.add_argument("--time-budget", type=int, default=540, help="seconds before this call returns")
     ap.add_argument("--judge-timeout", type=int, default=900)
-    ap.add_argument("--agents-dir", type=Path, default=None,
-                    help="judge definitions (default: the workspace's .claude/agents, beside the review "
-                         "folder, else the package's agents/)")
     ap.add_argument("--harness", choices=list(HARNESS), default="claude", help="which CLI judges the batches")
     ap.add_argument("--cli", help="the harness's CLI command (default: claude or codex; a wrapper that "
                                   "forwards its arguments works, and tests pass a fake)")
     args = ap.parse_args(argv)
+    if not args.model:
+        if args.harness != "claude":
+            ap.error("--model is required with --harness codex")
+        args.model = DEFAULT_CLAUDE_JUDGE
     if os.environ.get("CBMA_BATCH_JUDGE") == "1":
         ap.error("a batch judge cannot start a stage runner")
     args.cli = args.cli or args.harness
-    if args.agents_dir is None:
-        # The workspace's own settings, wherever the runner is started from. Relative to the current
-        # directory, a call made elsewhere lost the judges' effort and thinking budgets.
-        here = Path(".claude/agents")
-        beside = args.review_dir.resolve().parent / ".claude" / "agents"
-        args.agents_dir = next((d for d in (beside, here) if (d / f"{JUDGE[args.stage]}.md").is_file()),
-                               PACKAGE_AGENTS)
+    # The workspace's own settings, beside the review folder, wherever the runner is started from.
+    args.agents_dir = args.review_dir.resolve().parent / ".claude" / "agents"
     if any(n <= 0 for n in (args.size or SIZE[args.stage], args.parallel, args.rounds,
                             args.max_attempts, args.time_budget, args.judge_timeout)) or (
                             args.limit is not None and args.limit <= 0):
@@ -233,7 +236,7 @@ def main(argv=None) -> int:
     review = args.review_dir.resolve()
     skills = Path(ledger.SKILLS_ROOT)
     judge = JUDGE[args.stage]
-    effort = agent_effort(args.agents_dir, judge)
+    effort = ledger.judge_effort(review, args.stage)
     agent = f"{HARNESS[args.harness]}/{args.model}/effort-{effort}"
     if args.max_thinking_tokens is not None:
         agent += f"/thinking-budget-{args.max_thinking_tokens}"
@@ -276,7 +279,14 @@ def main(argv=None) -> int:
                             break
                 if len(historical) >= args.limit:
                     break
-            initial = historical or (sorted(existing) if existing else rv.pending(args.stage)[:args.limit])
+            if historical or existing:
+                initial = historical or sorted(existing)
+            elif args.random:
+                candidates = sorted(rv.pending(args.stage), key=int)
+                initial = sorted(random.Random(args.seed).sample(candidates, min(args.limit, len(candidates))),
+                                 key=int)
+            else:
+                initial = rv.pending(args.stage)[:args.limit]
             if historical and len(initial) < args.limit:
                 initial += [p for p in sorted(existing) if p not in initial]
             if len(initial) > args.limit:

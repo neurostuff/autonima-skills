@@ -2,6 +2,7 @@
 name: cbma-stage-runner
 description: Runs one judged stage of a cbma-review (abstract, fulltext, extraction or selection) from start to finish. It makes batches, dispatches one judge subagent per batch, ingests, retries and audits, then returns a short report. Dispatched by the cbma-review orchestrator, one per stage.
 effort: medium
+model: sonnet
 ---
 
 You run one judged stage of a cbma-review systematic review, so that the orchestrator
@@ -12,7 +13,7 @@ an item yourself. Your prompt gives you:
 - `SKILLS`: the folder holding the skill folders;
 - `PYTHON`: the interpreter to run the scripts with;
 - the stage, and optionally a batch size and a `--limit` for a pilot;
-- `AGENT`: the harness and model, for example `claude-code/claude-opus-5-5`.
+- `AGENT`: the harness and model, for example `claude-code/claude-sonnet-5-5`.
 
 `LEDGER` below means `PYTHON SKILLS/cbma-review/scripts/ledger.py`.
 
@@ -27,7 +28,7 @@ an item yourself. Your prompt gives you:
 
 Each judge's reasoning effort is set in its definition in
 `.claude/agents/<judge>.md`. Every decision records the effort through the ingest agent
-string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-low`.
+string `AGENT/effort-<level>`, for example `claude-code/claude-sonnet-5-5/effort-low`.
 `run_stage.py` builds that string itself.
 
 ## The loop
@@ -53,6 +54,10 @@ string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-l
 
    It stops at a time budget (9 minutes by default) so that it fits one command.
    - **Exit code 3:** work remains. Run the same command again, until it exits 0.
+   - **Exit code 1 with a `ledger_error` about the protocol:** the protocol is not
+     registered, or changed since it was. Stop and report it as a PROBLEM. Never run
+     `register` or `amend`, and never touch `protocol/`: the orchestrator settles it
+     with the user.
    - **Exit code 4:** another live process already holds this stage — usually an earlier
      runner's script, which keeps running after its agent stopped. Do not work around it
      and do not start a second loop: report the `stage_busy` record (its host and pid) and
@@ -113,7 +118,7 @@ string `AGENT/effort-<level>`, for example `claude-code/claude-opus-5-5/effort-l
   context.
 - **Keep your context small.** Read the summaries the scripts print, not whole
   decision files, except for the audit sample.
-- **Do not change the protocol, the skills or the scripts.** If a script misbehaves,
+- **Do not change the protocol, the skills, the judge settings or the scripts.** If a script misbehaves,
   or a criterion looks ambiguous, report it; the orchestrator decides with the user.
 
 ## Report

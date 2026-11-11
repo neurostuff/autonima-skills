@@ -8,6 +8,8 @@ the only thing that writes decisions. Standard library plus PyYAML.
     python ledger.py status   REVIEW_DIR [--json]          # PRISMA-style counts, writes results/prisma.json
     python ledger.py export   REVIEW_DIR                   # NiMADS studyset + annotation for NiMARE
     python ledger.py import-analyses REVIEW_DIR            # records mode: analyses from pre-extracted records
+    python ledger.py register REVIEW_DIR [--reason TEXT]   # register the protocol; required before judging
+    python ledger.py amend    REVIEW_DIR --reason TEXT     # a person, at a terminal: amend it after judging began
     python ledger.py lock     WORKSPACE                    # record the installed skills (install.sh runs it)
 
 Stages, in order: abstract, fulltext, extraction, selection.
@@ -29,6 +31,7 @@ Design rules (each one closes a failure mode found in autonima):
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import json
@@ -110,13 +113,28 @@ def norm_text(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-EVIDENCE_CHECK = 2
+EVIDENCE_CHECK = 3
 CLOSE_MATCH = 0.6
 
 
 def _word_pairs(s: str) -> set:
     w = re.findall(r"[a-z0-9]+", norm_text(s))
     return set(zip(w, w[1:]))
+
+
+def evidence_text(doc_dir: Path, text_file: Optional[str] = None) -> str:
+    """What a full-text quote may come from: the text the judge read, plus every parsed table's
+    label, caption, footer and cells. Judges quote table captions and footers as evidence, and
+    those live in docs/<pmid>/tables/*.json, not text.md (16 "ungrounded" decisions in the
+    emotion regulation pilot were verbatim captions). Check 3."""
+    parts = [Path(text_file or doc_dir / "text.md").read_text(encoding="utf-8")]
+    for t in sorted((doc_dir / "tables").glob("*.json")) if (doc_dir / "tables").exists() else []:
+        try:
+            table = json.loads(t.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        parts += [str(table.get(k) or "") for k in ("label", "caption", "footer", "tsv")]
+    return "\n".join(parts)
 
 
 def evidence_match(quote: str, haystack: str, text_pairs: set) -> str:
@@ -156,16 +174,33 @@ FULLTEXT_VIEWS = {"full", "trimmed"}
 
 _ALLOWED = {
     "": {"name", "objective", "search", "screening", "fulltext", "extraction", "selection", "meta", "notes"},
-    "search": {"query", "date_from", "date_to", "pmids", "pmids_file", "email"},
+    "search": {"query", "date_from", "date_to", "pmids", "pmids_file", "email", "neurostore"},
+    "search.neurostore": {"query", "search_full_text", "data_type", "snapshot", "base_url"},
     "screening": {"abstract", "fulltext"},
     "screening.stage": {"inclusion", "exclusion", "instructions", "select_analyses", "objective", "text"},
     "fulltext": {"sources"},
-    "extraction": {"drop_unverified", "instructions", "records"},
+    "extraction": {"drop_unverified", "instructions", "records", "neurostore"},
+    "extraction.neurostore": {"sources", "roles", "snapshot", "fallback"},
     "selection": {"global", "targets", "instructions"},
     "selection.global": {"inclusion", "exclusion"},
     "selection.target": {"name", "description", "inclusion", "exclusion", "instructions"},
-    "meta": {"estimator", "corrector", "estimator_args", "corrector_args"},
+    "meta": {"estimator", "corrector", "estimator_args", "corrector_args", "unknown_space"},
 }
+
+
+# NeuroStore versions an analysis can come from, and the roles it gives analyses (see the neurostore skill).
+NEUROSTORE_SOURCES = ("study_schema", "nuextract-v21", "llm", "neurostore", "pubget", "nuextract-v19", "neuroquery",
+                      "neurosynth")
+NEUROSTORE_ROLES = ("result", "anchor", "localization", "reference", "other")
+
+
+def records_source(spec: dict) -> Optional[str]:
+    """The folder of pre-extracted records that stands in for judged extraction, or None. With
+    extraction.neurostore it is the one neurostore.py writes in the review folder."""
+    ext = spec.get("extraction") or {}
+    if "neurostore" in ext:
+        return "neurostore/records"
+    return ext.get("records")
 
 
 def _check_keys(obj: dict, allowed_key: str, where: str) -> None:
@@ -184,8 +219,18 @@ def validate_spec(spec: dict) -> None:
         raise LedgerError("review.yaml needs an objective")
     _check_keys(spec.get("search") or {}, "search", "search")
     search = spec.get("search") or {}
-    if not (search.get("query") or search.get("pmids") or search.get("pmids_file")):
-        raise LedgerError("search needs a query, pmids or pmids_file")
+    if not (search.get("query") or search.get("pmids") or search.get("pmids_file") or "neurostore" in search):
+        raise LedgerError("search needs a query, pmids, pmids_file or neurostore")
+    if "neurostore" in search:
+        ns = search["neurostore"] or {}
+        _check_keys(ns, "search.neurostore", "search.neurostore")
+        # One query: the PubMed query, which neurostore.py translates as autonima does, or one written
+        # in NeuroStore's syntax. Both would leave unclear which one ran.
+        if bool(search.get("query")) == bool(ns.get("query")):
+            raise LedgerError("with search.neurostore, give one query: search.query (a PubMed query, translated "
+                              "for NeuroStore) or search.neurostore.query (NeuroStore's syntax), not both or neither")
+        if ns.get("data_type", "coordinate") not in ("coordinate", "image", "both", None):
+            raise LedgerError("search.neurostore.data_type must be coordinate, image, both or null")
     screening = spec.get("screening") or {}
     _check_keys(screening, "screening", "screening")
     for stage in ("abstract", "fulltext"):
@@ -202,11 +247,27 @@ def validate_spec(spec: dict) -> None:
     if (screening.get("abstract") or {}).get("select_analyses"):
         raise LedgerError("select_analyses belongs to screening.fulltext, not screening.abstract")
     ft = screening.get("fulltext") or {}
-    if ft.get("select_analyses") and not (spec.get("extraction") or {}).get("records"):
-        raise LedgerError("screening.fulltext.select_analyses needs extraction.records: the analyses must "
-                          "exist before full-text screening")
+    if ft.get("select_analyses") and not records_source(spec):
+        raise LedgerError("screening.fulltext.select_analyses needs extraction.records or extraction.neurostore: "
+                          "the analyses must exist before full-text screening")
     _check_keys(spec.get("fulltext") or {}, "fulltext", "fulltext")
     _check_keys(spec.get("extraction") or {}, "extraction", "extraction")
+    ext = spec.get("extraction") or {}
+    if "neurostore" in ext:
+        ns = ext["neurostore"] or {}
+        _check_keys(ns, "extraction.neurostore", "extraction.neurostore")
+        if ext.get("records"):
+            raise LedgerError("extraction.records and extraction.neurostore both name the analyses' source; keep one")
+        for key, known in (("sources", NEUROSTORE_SOURCES), ("roles", NEUROSTORE_ROLES)):
+            unknown = set(ns.get(key) or []) - set(known)
+            if unknown:
+                raise LedgerError(f"extraction.neurostore.{key}: unknown {sorted(unknown)} (known: {list(known)})")
+        if ns.get("fallback", "none") not in ("none", "judged"):
+            raise LedgerError("extraction.neurostore.fallback must be none (the default) or judged")
+        if ns.get("fallback") == "judged" and ft.get("select_analyses"):
+            raise LedgerError("extraction.neurostore.fallback: judged cannot be combined with "
+                              "screening.fulltext.select_analyses: combined mode needs every study's analyses "
+                              "before full-text screening, and judged extraction comes after it")
     selection = spec.get("selection") or {}
     _check_keys(selection, "selection", "selection")
     _check_keys(selection.get("global") or {}, "selection.global", "selection.global")
@@ -219,6 +280,8 @@ def validate_spec(spec: dict) -> None:
             raise LedgerError(f"duplicate target name {t['name']}")
         names.add(t["name"])
     _check_keys(spec.get("meta") or {}, "meta", "meta")
+    if (spec.get("meta") or {}).get("unknown_space", "mni") not in ("mni", "exclude"):
+        raise LedgerError("meta.unknown_space must be mni (the default) or exclude")
 
 
 def number(inclusion: List[str], exclusion: List[str], prefix: str = "") -> Dict[str, str]:
@@ -248,6 +311,8 @@ def stage_criteria(spec: dict, stage: str) -> dict:
         # Only when set, so reviews that extract with judges keep their hashes.
         if ext.get("records"):
             payload["records"] = ext["records"]
+        if "neurostore" in ext:
+            payload["neurostore"] = ext["neurostore"] or {}
     elif stage == "selection":
         sel = spec.get("selection") or {}
         glob = sel.get("global") or {}
@@ -534,6 +599,28 @@ def extraction_input_view(review_root: Path) -> str:
     return view
 
 
+# Why neurostore.py records found nothing for a study. A fetch failure is transient, so it is
+# retried there, never handed to judges.
+NO_RECORD_REASONS = {"not_in_neurostore", "no_coordinates", "no_coordinates_from_configured_sources",
+                     "no_kept_analyses", "not_in_snapshot"}
+
+
+def judged_fallback(spec: dict) -> bool:
+    """With extraction.neurostore.fallback: judged, judges extract the studies NeuroStore has no
+    analyses for (a hybrid: NeuroStore's coordinates where it has them, the paper's tables otherwise)."""
+    ns = (spec.get("extraction") or {}).get("neurostore")
+    return isinstance(ns, dict) and ns.get("fallback") == "judged"
+
+
+def neurostore_without_record(rv: "Review") -> Dict[str, str]:
+    """The studies `neurostore.py records` looked up and found nothing usable for, with the reason."""
+    path = rv.root / "neurostore" / "unavailable.csv"
+    if not path.exists():
+        return {}
+    with path.open() as fh:
+        return {r["pmid"]: r["reason"] for r in csv.DictReader(fh) if r.get("reason") in NO_RECORD_REASONS}
+
+
 def _record_tableless(rv: Review, pmid: str, input_view: str) -> bool:
     """A study with no parsed tables cannot yield an analysis: points are accepted only when they
     match a parsed table row. Across eight runs not one such study produced an analysis, yet each
@@ -551,6 +638,7 @@ def _record_tableless(rv: Review, pmid: str, input_view: str) -> bool:
 
 
 def cmd_batches(rv: Review, stage: str, size: int, limit: Optional[int], discard: bool) -> List[Path]:
+    version = require_protocol(rv)
     input_view = extraction_input_view(rv.root) if stage == "extraction" else "full"
     work = rv.work_dir(stage)
     work.mkdir(parents=True, exist_ok=True)
@@ -569,6 +657,17 @@ def cmd_batches(rv: Review, stage: str, size: int, limit: Optional[int], discard
         else:
             p.unlink()
     pending = rv.pending(stage)
+    if stage == "extraction" and records_source(rv.spec):
+        # Records mode: import-analyses is the extractor. Judges extract only with the hybrid
+        # fallback, and only the studies NeuroStore was asked about and had nothing for, so a
+        # study whose record simply has not been fetched or imported yet is never judged.
+        if not judged_fallback(rv.spec):
+            raise LedgerError("extraction comes from records here: run `ledger.py import-analyses REVIEW` "
+                              "(with extraction.neurostore, `neurostore.py records REVIEW` first). To have judges "
+                              "extract the studies NeuroStore has no analyses for, the protocol must set "
+                              "extraction.neurostore.fallback: judged")
+        missing = neurostore_without_record(rv)
+        pending = [p for p in pending if p in missing]
     if stage == "extraction" and not rv.combined:
         pending = [p for p in pending if not _record_tableless(rv, p, input_view)]
     if limit:
@@ -592,6 +691,7 @@ def cmd_batches(rv: Review, stage: str, size: int, limit: Optional[int], discard
             # The ledger fills these in at ingest; the subagent never copies them.
             "_criteria_hash": crit["hash"],
             "_input_hashes": {p: rv.input_hash(stage, p) for p in chunk},
+            "_protocol_version": version,
         }
         if stage == "selection":
             batch["targets"] = crit["payload"]["targets"]
@@ -898,6 +998,7 @@ def validate_selection(lines: List[dict], item: dict, targets: Dict[str, dict], 
 # --------------------------------------------------------------------------- #
 
 def cmd_ingest(rv: Review, stage: str, agent: str) -> dict:
+    version = require_protocol(rv)
     work = rv.work_dir(stage)
     done_dir = work / "done"
     report = {"stage": stage, "batches": 0, "accepted": 0, "rejected": 0, "missing_output": 0, "errors": []}
@@ -917,7 +1018,9 @@ def cmd_ingest(rv: Review, stage: str, agent: str) -> dict:
         accepted_rows: List[dict] = []
         items = {it["pmid"]: it for it in batch["items"]}
         base = {"stage": stage, "batch_id": batch["batch_id"], "agent": agent, "ingested_at": now(),
-                "criteria_hash": batch["_criteria_hash"]}
+                "criteria_hash": batch["_criteria_hash"],
+                # The version the judge's batch was made under; its criteria for this stage are current.
+                "protocol_version": batch.get("_protocol_version", version)}
 
         if stage in ("abstract", "fulltext"):
             try:
@@ -938,7 +1041,7 @@ def cmd_ingest(rv: Review, stage: str, agent: str) -> dict:
                     report["errors"].append(f"{batch['batch_id']}: pmid {pmid} appears twice; first kept")
                     continue
                 seen.add(pmid)
-                text = Path(items[pmid]["text_file"]).read_text() if stage == "fulltext" else None
+                text = evidence_text(rv.doc_dir(pmid), items[pmid]["text_file"]) if stage == "fulltext" else None
                 errs, flags = validate_screening(rec, stage, ids, text)
                 if batch["_input_hashes"][pmid] != rv.input_hash(stage, pmid):
                     errs.append(f"pmid {pmid}: the input changed after the batch was made")
@@ -1077,13 +1180,15 @@ def cmd_import_analyses(rv: Review, agent: str) -> dict:
     is left out, as a judged extraction would leave it out. A study with no record file
     stays pending, and is reported.
     """
-    records = (rv.spec.get("extraction") or {}).get("records")
+    records = records_source(rv.spec)
     if not records:
-        raise LedgerError("review.yaml sets no extraction.records folder")
+        raise LedgerError("review.yaml sets no extraction.records folder or extraction.neurostore")
     folder = Path(records).expanduser()
     folder = folder if folder.is_absolute() else rv.root / folder
     if not folder.is_dir():
-        raise LedgerError(f"extraction.records folder {folder} does not exist")
+        hint = "; run `neurostore.py records REVIEW` first" if "neurostore" in (rv.spec.get("extraction") or {}) else ""
+        raise LedgerError(f"extraction.records folder {folder} does not exist{hint}")
+    version = require_protocol(rv)
     report = {"imported": 0, "with_analyses": 0, "analyses": 0, "points": 0, "space_from_analysis": 0,
               "space_unknown": 0, "no_record": []}
     crit_hash = rv.criteria["extraction"]["hash"]
@@ -1130,7 +1235,7 @@ def cmd_import_analyses(rv: Review, agent: str) -> dict:
                              for t, n in tables.items()],
                   "analyses": analyses, "stage": "extraction", "batch_id": "import", "agent": agent,
                   "ingested_at": now(), "criteria_hash": crit_hash, "input_hash": rv.input_hash("extraction", pmid),
-                  "source": {"path": str(src), "sha256": sha(raw)}}
+                  "protocol_version": version, "source": {"path": str(src), "sha256": sha(raw)}}
         write_json(rv.root / "analyses" / f"{pmid}.json", record)
         report["imported"] += 1
         report["with_analyses"] += bool(analyses)
@@ -1178,8 +1283,10 @@ def cmd_lock(workspace: Path) -> dict:
     """Record the installed files, so that status can show any later edit to them."""
     import subprocess
     files = installed_files(workspace)
+    # The interpreter that ran the lock is the one the review's scripts run with: install.sh
+    # runs this with the workspace's environment (.venv), built from the package's uv.lock.
     lock = {"package": str(SKILLS_ROOT.parent), "locked_at": now(), "sha256": _files_sha(files), "git": None,
-            "files": files}
+            "python": sys.executable, "files": files}
     def git(*args):
         return subprocess.run(["git", "-C", str(SKILLS_ROOT.parent), *args], capture_output=True, text=True,
                               check=True).stdout.strip()
@@ -1189,6 +1296,78 @@ def cmd_lock(workspace: Path) -> dict:
         pass                                            # not a git checkout: the file hashes still hold
     write_json(workspace / LOCK_NAME, lock)
     return {k: v for k, v in lock.items() if k != "files"} | {"files": len(files)}
+
+
+def cmd_check(rv: "Review", harness: str = "claude") -> dict:
+    """Before registration: can everything this review.yaml will need be imported and run?
+
+    A missing package should surface while planning, not halfway through retrieval or at the
+    meta-analysis. Checks the interpreter against the workspace lock, the Elsevier parser when a
+    source declares `format: elsevier`, NiMARE when there are selection targets, and the judges'
+    CLI and its login (judges run `claude -p` with the CLI's own login, not the session's)."""
+    import importlib
+    import shutil
+    import subprocess
+    checks: List[dict] = []
+
+    def add(name: str, ok: bool, detail: str, required: bool = True) -> None:
+        checks.append({"check": name, "ok": bool(ok), "required": required, "detail": detail})
+
+    lock_path = rv.root.parent / LOCK_NAME
+    locked = json.loads(lock_path.read_text()).get("python") if lock_path.exists() else None
+    if locked:
+        add("python", Path(locked) == Path(sys.executable),
+            f"running {sys.executable}" if Path(locked) == Path(sys.executable)
+            else f"running {sys.executable}; run the scripts with the workspace's {locked}")
+    else:
+        add("python", True, "the workspace lock names no interpreter; re-run install.sh to build the "
+                            "workspace environment from uv.lock", required=False)
+
+    def importable(*modules: str) -> Optional[str]:
+        for m in modules:
+            try:
+                importlib.import_module(m)
+            except Exception as exc:  # noqa: BLE001 - any import failure means "not usable"
+                return f"{m}: {type(exc).__name__}: {exc}"
+        return None
+
+    sources = (rv.spec.get("fulltext") or {}).get("sources") or []
+    if any(isinstance(s, dict) and s.get("format") == "elsevier" for s in sources):
+        err = importable("elsevier_coordinate_extraction.extract.text",
+                         "elsevier_coordinate_extraction.table_extraction")
+        add("elsevier_parser", err is None, err or "importable",)
+    if (rv.spec.get("selection") or {}).get("targets"):
+        err = importable("nimare")
+        if err is None:
+            import nimare  # type: ignore
+            add("nimare", True, f"nimare {getattr(nimare, '__version__', '?')}")
+        else:
+            add("nimare", False, err)
+    if "neurostore" in (rv.spec.get("search") or {}):
+        # Not required: a warning to show while the query can still change for free.
+        sys.path.insert(0, str(SKILLS_ROOT / "neurostore" / "scripts"))
+        import neurostore  # type: ignore
+        try:
+            query, _ = neurostore.resolve_query(rv.spec)
+            terms = neurostore.imaging_terms(query)
+            add("neurostore_query", not terms,
+                f"imaging terms {terms}: {neurostore.IMAGING_WARNING}" if terms else "no imaging-method terms",
+                required=False)
+        except neurostore.NeuroStoreError as exc:
+            add("neurostore_query", False, str(exc))
+    cli = {"claude": "claude", "codex": "codex"}[harness]
+    if not shutil.which(cli):
+        add("judge_cli", False, f"`{cli}` is not on PATH; judges run as `{cli}` sessions")
+    elif harness == "claude":
+        try:
+            ok = subprocess.run([cli, "auth", "status"], capture_output=True, timeout=60).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            ok = False
+        add("judge_cli", ok, "logged in" if ok else
+            "the claude CLI is not logged in; the user runs `claude auth login` in a terminal")
+    else:
+        add("judge_cli", True, f"`{cli}` found")
+    return {"ok": all(c["ok"] for c in checks if c["required"]), "checks": checks}
 
 
 def package_drift(workspace: Path) -> dict:
@@ -1201,7 +1380,8 @@ def package_drift(workspace: Path) -> dict:
     lock = json.loads(path.read_text())
     old, new = lock.get("files", {}), installed_files(workspace)
     report = {"lock": "ok", "sha256": lock.get("sha256", "")[:16], "locked_at": lock.get("locked_at"),
-              **({"git_commit": lock["git"]["commit"][:12]} if lock.get("git") else {})}
+              **({"git_commit": lock["git"]["commit"][:12]} if lock.get("git") else {}),
+              **({"python": lock["python"]} if lock.get("python") else {})}
     if lock.get("package") != str(SKILLS_ROOT.parent):
         # Informational: a moved or re-cloned package with the same files is the same package.
         report["package_moved"] = {"locked": lock.get("package"), "running": str(SKILLS_ROOT.parent)}
@@ -1212,6 +1392,210 @@ def package_drift(workspace: Path) -> dict:
                       hint="the installed skills or judge settings differ from the workspace lock. "
                            "Show the user; re-lock only if they confirm the change was intended")
     return report
+
+
+# --------------------------------------------------------------------------- #
+# Protocol registration: what was registered, when, and every amendment since
+# --------------------------------------------------------------------------- #
+#
+# REVIEW/protocol/v001.json, v002.json, ... are append-only. Each version holds review.yaml, the
+# stage criteria hashes (which cover the stage skills) and the judge settings, and is chained to
+# the one before it by hash. Judging, ingesting and exporting refuse to run while the live
+# protocol differs from the latest version. Before any judgment, `register` records a new
+# version freely. After one, only `amend`, confirmed by a person at a terminal with a reason,
+# can: an agent's shell has no terminal. This is a guardrail and an audit trail. A local file
+# cannot prove when it was written; Neurosynth Compose's server-side registration can.
+
+JUDGES = {"abstract": "cbma-abstract-screener", "fulltext": "cbma-fulltext-screener",
+          "extraction": "cbma-extractor", "selection": "cbma-selector"}
+JUDGE_SETTING_FILES = ("judge_input_views", "judge_output_formats", "judge_thinking_budgets")
+
+
+def judge_definition(review_root: Path, stage: str) -> Path:
+    """The workspace's copy of a judge's definition (install.sh puts one in .claude/agents beside the
+    review folder), or the package's own when the workspace has none, as in a Codex workspace."""
+    mine = review_root.resolve().parent / ".claude" / "agents" / f"{JUDGES[stage]}.md"
+    return mine if mine.is_file() else SKILLS_ROOT.parent / "agents" / f"{JUDGES[stage]}.md"
+
+
+def judge_effort(review_root: Path, stage: str) -> str:
+    m = re.search(r"^effort:\s*(\S+)", judge_definition(review_root, stage).read_text(), re.M)
+    return m.group(1) if m else "default"
+
+
+def judge_settings(review_root: Path) -> dict:
+    """Everything outside review.yaml that changes how a judge works: each judge's effort, and the
+    workspace's judge setting files."""
+    agents = review_root.resolve().parent / ".claude" / "agents"
+    settings = {"efforts": {s: judge_effort(review_root, s) for s in STAGES}}
+    for name in JUDGE_SETTING_FILES:
+        path = agents / f"{name}.json"
+        settings[name] = json.loads(path.read_text()) if path.exists() else None
+    return settings
+
+
+def protocol_state(rv: "Review") -> dict:
+    """The parts of the live protocol a registered version must match."""
+    return {"spec_sha256": hashlib.sha256(json.dumps(rv.spec, sort_keys=True).encode()).hexdigest(),
+            "criteria_hashes": {s: rv.criteria[s]["hash"] for s in STAGES},
+            "judge_settings": judge_settings(rv.root)}
+
+
+def _record_sha(record: dict) -> str:
+    return hashlib.sha256(json.dumps({k: v for k, v in record.items() if k != "sha256"},
+                                     sort_keys=True).encode()).hexdigest()
+
+
+def protocol_versions(rv: "Review") -> List[dict]:
+    """Every registered version, oldest first, after checking that none was edited, removed or
+    re-chained, and that no decision names a version that is not there."""
+    versions = []
+    for path in sorted((rv.root / "protocol").glob("v*.json")):
+        record = json.loads(path.read_text())
+        n = len(versions) + 1
+        if path.name != f"v{n:03d}.json" or record.get("version") != n:
+            raise LedgerError(f"protocol/{path.name}: expected v{n:03d}.json; a version is missing or renamed")
+        if record.get("sha256") != _record_sha(record):
+            raise LedgerError(f"protocol/{path.name} was edited after it was registered")
+        if record.get("previous_sha256") != (versions[-1]["sha256"] if versions else None):
+            raise LedgerError(f"protocol/{path.name} does not follow v{n - 1:03d}; the chain was rewritten")
+        versions.append(record)
+    named = {r.get("protocol_version") for r in recorded_judgments(rv)} - {None}
+    if named and max(named) > len(versions):
+        raise LedgerError(f"decisions name protocol v{max(named):03d}, but only {len(versions)} versions exist; "
+                          "protocol/ was altered")
+    return versions
+
+
+def recorded_judgments(rv: "Review") -> List[dict]:
+    """Every recorded decision, valid or not, and every accepted extraction."""
+    rows = [r for s in STAGES for r in read_jsonl(rv.decisions_path(s))]
+    for path in sorted((rv.root / "analyses").glob("*.json")):
+        rows.append(json.loads(path.read_text()))
+    return rows
+
+
+def _differences(head: dict, state: dict) -> List[str]:
+    out = []
+    if head["spec_sha256"] != state["spec_sha256"]:
+        out.append("review.yaml")
+    out += [f"{s} criteria or skill" for s in STAGES if head["criteria_hashes"][s] != state["criteria_hashes"][s]]
+    out += [f"judge setting {k}" for k in sorted(state["judge_settings"])
+            if head["judge_settings"].get(k) != state["judge_settings"][k]]
+    return out
+
+
+def require_protocol(rv: "Review") -> int:
+    """The version in force, or a LedgerError saying what the user must do first."""
+    versions = protocol_versions(rv)
+    if not versions:
+        raise LedgerError("no registered protocol. Show the user the numbered criteria (`ledger.py init`), and "
+                          "once they confirm them, run `ledger.py register REVIEW`")
+    head = versions[-1]
+    changed = _differences(head, protocol_state(rv))
+    if changed:
+        what = ", ".join(changed)
+        if not recorded_judgments(rv):
+            raise LedgerError(f"{what} changed since protocol v{head['version']:03d}. Nothing has been judged yet: "
+                              "once the user confirms the change, run `ledger.py register REVIEW`")
+        raise LedgerError(f"{what} changed since protocol v{head['version']:03d} was registered, and judgments "
+                          "exist. Only a person can amend a protocol: ask the user to run `ledger.py amend REVIEW "
+                          "--reason \"...\"` in their own terminal, or revert the change. Never run amend yourself")
+    return head["version"]
+
+
+def _new_version(rv: "Review", versions: List[dict], kind: str, reason: Optional[str]) -> dict:
+    lock = rv.root.parent / LOCK_NAME
+    package = None
+    if lock.exists():
+        locked = json.loads(lock.read_text())
+        package = {"lock_sha256": locked.get("sha256"), "git": locked.get("git"),
+                   "drift": package_drift(rv.root.parent)["lock"]}
+    judged = Counter(r.get("stage", "extraction") for r in recorded_judgments(rv))
+    record = {"version": len(versions) + 1, "kind": kind, "registered_at": now(), "reason": reason,
+              **protocol_state(rv), "review_yaml": (rv.root / "review.yaml").read_text(), "package": package,
+              "judgments_recorded_before": dict(judged),
+              "previous_sha256": versions[-1]["sha256"] if versions else None}
+    record["sha256"] = _record_sha(record)
+    path = rv.root / "protocol" / f"v{record['version']:03d}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "x", encoding="utf-8") as fh:              # never overwrite a version
+        fh.write(json.dumps(record, indent=1, ensure_ascii=False) + "\n")
+    return record
+
+
+def _summary(record: dict) -> dict:
+    return {k: record[k] for k in ("version", "kind", "registered_at", "reason")} | {"sha256": record["sha256"][:16]}
+
+
+def cmd_register(rv: "Review", reason: Optional[str]) -> dict:
+    """Register the protocol, or record a revision made before anything was judged."""
+    versions = protocol_versions(rv)
+    if versions and not _differences(versions[-1], protocol_state(rv)):
+        return {"unchanged": True, **_summary(versions[-1])}
+    if versions and recorded_judgments(rv):
+        raise LedgerError("judgments exist, so this change is an amendment. Only a person can amend a protocol: "
+                          "ask the user to run `ledger.py amend REVIEW --reason \"...\"` in their own terminal")
+    record = _new_version(rv, versions, "registration" if not versions else "revision", reason)
+    out = _summary(record)
+    if record["judgments_recorded_before"]:
+        out["warning"] = (f"registered after {sum(record['judgments_recorded_before'].values())} judgments were "
+                          "already recorded; report this with the results")
+    return out
+
+
+def _confirm(prompt: str) -> str:
+    """A person's answer at a terminal. An agent's shell has none, so this is where amendments stop."""
+    if not sys.stdin.isatty():
+        raise LedgerError("amendments are confirmed by a person at a terminal, and this one has none. "
+                          "Ask the user to run this command in their own terminal")
+    return input(prompt)
+
+
+def cmd_amend(rv: "Review", reason: str) -> dict:
+    import difflib
+    if not reason or not reason.strip():
+        raise LedgerError("an amendment needs --reason: why the protocol changes, in a sentence")
+    versions = protocol_versions(rv)
+    if not versions:
+        raise LedgerError("no registered protocol to amend; run `ledger.py register REVIEW` first")
+    head, state = versions[-1], protocol_state(rv)
+    changed = _differences(head, state)
+    if not changed:
+        raise LedgerError(f"nothing differs from protocol v{head['version']:03d}; there is nothing to amend")
+    n = head["version"] + 1
+    print(f"Amending protocol v{head['version']:03d} -> v{n:03d}: {', '.join(changed)}")
+    print("".join(difflib.unified_diff(head["review_yaml"].splitlines(True),
+                                       (rv.root / "review.yaml").read_text().splitlines(True),
+                                       f"review.yaml (v{head['version']:03d})", "review.yaml (now)")))
+    for k in sorted(state["judge_settings"]):
+        if head["judge_settings"].get(k) != state["judge_settings"][k]:
+            print(f"{k}: {json.dumps(head['judge_settings'].get(k))} -> {json.dumps(state['judge_settings'][k])}")
+    for s in STAGES:
+        if head["criteria_hashes"][s] != state["criteria_hashes"][s]:
+            reopened = sum(1 for r in read_jsonl(rv.decisions_path(s)) if r.get("criteria_hash") == head["criteria_hashes"][s])
+            print(f"{s}: criteria change; {reopened} recorded decisions will be judged again")
+    print(f"Reason: {reason.strip()}")
+    if _confirm(f'Type "amend v{n:03d}" to register this amendment: ').strip() != f"amend v{n:03d}":
+        raise LedgerError("not confirmed; the protocol is unchanged")
+    return _summary(_new_version(rv, versions, "amendment", reason.strip()))
+
+
+def protocol_report(rv: "Review") -> dict:
+    """For status and export: the version chain and how many decisions each version made."""
+    try:
+        versions = protocol_versions(rv)
+    except LedgerError as exc:
+        return {"chain": "broken", "error": str(exc)}
+    if not versions:
+        return {"registered": False}
+    made = Counter(r.get("protocol_version") for r in recorded_judgments(rv))
+    head = versions[-1]
+    return {"registered": True, "version": head["version"],
+            "amendments": sum(v["kind"] == "amendment" for v in versions),
+            "matches_live": not _differences(head, protocol_state(rv)),
+            "versions": [dict(_summary(v), judgments=made.get(v["version"], 0)) for v in versions],
+            "judgments_without_version": made.get(None, 0)}
 
 
 def cmd_status(rv: Review) -> dict:
@@ -1231,7 +1615,7 @@ def cmd_status(rv: Review) -> dict:
             # mean the same for old and new decisions.
             text_path = rv.doc_dir(r["pmid"]) / "text.md"
             if text_path.exists():
-                text = text_path.read_text(encoding="utf-8")
+                text = evidence_text(rv.doc_dir(r["pmid"]))
                 hay, tp = norm_text(text), _word_pairs(text)
                 m = [evidence_match(e.get("quote", ""), hay, tp) for e in r.get("evidence") or [] if isinstance(e, dict)]
                 r = dict(r, ungrounded_evidence=[1 for x in m if x == "none"], inexact_evidence=[1 for x in m if x == "close"])
@@ -1244,6 +1628,12 @@ def cmd_status(rv: Review) -> dict:
            "points_from_records": 0, "pending": 0}
     ext_pending = set(rv.pending("extraction"))
     ext["pending"] = len(ext_pending)
+    if records_source(rv.spec):
+        # Records mode: say which pending studies NeuroStore had nothing for. With the judged
+        # fallback the extraction stage takes those; without it they stay pending, reported.
+        missing = neurostore_without_record(rv)
+        ext["pending_without_record"] = sum(p in missing for p in ext_pending)
+        ext["fallback"] = "judged" if judged_fallback(rv.spec) else "none"
     for p in included:
         an = rv.analyses(p)
         if an is None or p in ext_pending:
@@ -1283,6 +1673,7 @@ def cmd_status(rv: Review) -> dict:
         "extraction": ext,
         "selection": {"pending_studies": len(rv.pending("selection")), "targets": targets},
         "criteria_hashes": {s: rv.criteria[s]["hash"] for s in STAGES},
+        "protocol": protocol_report(rv),
         "package": package_drift(rv.root.parent),
         "generated_at": now(),
     }
@@ -1302,6 +1693,8 @@ def cmd_export(rv: Review, allow_pending: bool, include_table_only: bool) -> dic
     studyset entirely rather than exported as false; without --allow-pending the
     export refuses while any are missing.
     """
+    require_protocol(rv)
+    protocol = protocol_report(rv)
     drop_unverified = (rv.spec.get("extraction") or {}).get("drop_unverified", True)
     targets = list(rv.criteria["selection"]["payload"]["targets"])
     sel = rv.valid_decisions("selection")
@@ -1350,14 +1743,16 @@ def cmd_export(rv: Review, allow_pending: bool, include_table_only: bool) -> dic
         })
     name = rv.spec.get("name") or rv.root.name
     studyset = {"id": f"cbma_skills_{name}", "name": name, "description": rv.spec["objective"],
-                "publication": None, "doi": None, "pmid": None, "studies": studies}
+                "publication": None, "doi": None, "pmid": None, "studies": studies, "protocol": protocol}
     annotation = {"id": "cbma_skills", "name": "cbma_skills_selection",
                   "description": "Analysis selection decisions recorded by the autonima-skills ledger",
-                  "studyset_id": studyset["id"], "note_keys": {t: "boolean" for t in targets}, "notes": notes}
+                  "studyset_id": studyset["id"], "note_keys": {t: "boolean" for t in targets}, "notes": notes,
+                  "protocol": protocol}
     out = rv.root / "results" / "nimads"
     write_json(out / "studyset.json", studyset)
     write_json(out / "annotation.json", annotation)
     return {"studies": len(studies), "analyses": len(notes), "targets": targets, "dropped": dict(dropped),
+            "protocol": {"version": protocol["version"], "amendments": protocol["amendments"]},
             "written": [str(out / "studyset.json"), str(out / "annotation.json")]}
 
 
@@ -1368,6 +1763,9 @@ def cmd_export(rv: Review, allow_pending: bool, include_table_only: bool) -> dic
 def main(argv: Optional[Iterable[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("check", help="before registering: are this review's dependencies and judge CLI usable?")
+    p.add_argument("review_dir", type=Path)
+    p.add_argument("--harness", choices=("claude", "codex"), default="claude")
     for name in ("init", "needs-fulltext", "status"):
         p = sub.add_parser(name)
         p.add_argument("review_dir", type=Path)
@@ -1386,12 +1784,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                    help="also export points verified only somewhere in the table, not within one row")
     p = sub.add_parser("import-analyses", help="records mode: analyses from pre-extracted records")
     p.add_argument("review_dir", type=Path)
-    p.add_argument("--agent", default="records", help="what produced the records, e.g. pondie")
+    p.add_argument("--agent", help="what produced the records, e.g. pondie (default: neurostore with "
+                                   "extraction.neurostore, else records)")
     p = sub.add_parser("ingest")
     p.add_argument("review_dir", type=Path)
     p.add_argument("--stage", choices=STAGES, required=True)
     p.add_argument("--agent", default=os.environ.get("CBMA_AGENT", "unknown"),
                    help="harness/model that produced the output, e.g. claude-code/<model id>")
+    p = sub.add_parser("register", help="register the protocol (or a revision, before anything is judged)")
+    p.add_argument("review_dir", type=Path)
+    p.add_argument("--reason", help="optional for the first registration")
+    p = sub.add_parser("amend", help="a person, at a terminal: amend the registered protocol")
+    p.add_argument("review_dir", type=Path)
+    p.add_argument("--reason", required=True, help="why the protocol changes, in a sentence")
     p = sub.add_parser("lock", help="record the installed skills and judge settings (install.sh runs this)")
     p.add_argument("workspace", type=Path)
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -1412,6 +1817,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                             **({"targets": target_ids} if s == "selection" else {})} for s in STAGES})
             print(json.dumps({**shown, "targets": target_ids}, indent=1))
             print("review.yaml is valid; criteria IDs written to results/criteria.json", file=sys.stderr)
+        elif args.cmd == "check":
+            report = cmd_check(rv, args.harness)
+            print(json.dumps(report, indent=1))
+            return 0 if report["ok"] else 1
         elif args.cmd == "batches":
             paths = cmd_batches(rv, args.stage, args.size, args.limit, args.discard)
             print(json.dumps({"stage": args.stage, "batches": [str(p) for p in paths],
@@ -1427,14 +1836,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             path.write_text("".join(f"{p}\n" for p in passed))
             print(f"{len(passed)} PMIDs passed abstract screening -> {path}")
         elif args.cmd == "import-analyses":
-            report = cmd_import_analyses(rv, args.agent)
+            agent = args.agent or ("neurostore" if "neurostore" in (rv.spec.get("extraction") or {}) else "records")
+            report = cmd_import_analyses(rv, agent)
             print(json.dumps({**report, "no_record": len(report["no_record"]),
                               "no_record_pmids": report["no_record"][:50]}, indent=1))
         elif args.cmd == "export":
             print(json.dumps(cmd_export(rv, args.allow_pending, args.include_table_only), indent=1))
+        elif args.cmd == "register":
+            print(json.dumps(cmd_register(rv, args.reason), indent=1))
+        elif args.cmd == "amend":
+            print(json.dumps(cmd_amend(rv, args.reason), indent=1))
         elif args.cmd == "status":
             status = cmd_status(rv)
             print(json.dumps(status, indent=1))
+            if not status["protocol"].get("matches_live", False):
+                print(f"WARNING: protocol: {status['protocol']}", file=sys.stderr)
             if status["package"]["lock"] == "drift":
                 print("WARNING: installed skills or judge settings differ from the workspace lock: "
                       f"{status['package']}", file=sys.stderr)

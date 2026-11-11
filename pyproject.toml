@@ -1,0 +1,20 @@
+# The scripts' dependencies. The skills are not an installable package; install.sh builds a
+# virtual environment in the workspace from uv.lock, so every review runs on the same versions.
+[project]
+name = "autonima-skills"
+version = "0.1.0"
+description = "Coordinate-based neuroimaging meta-analysis as a systematic review, run as agent skills"
+requires-python = ">=3.10"
+dependencies = ["pyyaml>=6"]
+
+[dependency-groups]
+# The meta-analysis stage (cbma-nimare). run_meta.py is tested on this exact version.
+meta = ["nimare==0.21.0"]
+# Elsevier API XML as a local full-text source (fulltext-sources, format: elsevier).
+elsevier = [
+  "elsevier-coordinate-extraction @ git+https://github.com/neurostuff/elsevier_coordinate_extractor@d30f0fee779cff491aaf639e88a1b74f8d4050a1",
+]
+test = ["pytest>=8"]
+
+[tool.uv]
+package = false

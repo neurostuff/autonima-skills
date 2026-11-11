@@ -120,6 +120,7 @@ def test_implausible_methods_share_falls_back():
 def _to_fulltext(review, capsys):
     """The pipeline test's path to two full-text documents: abstract includes, then gathering."""
     assert run_ledger("init", review) == 0
+    assert run_ledger("register", review) == 0
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "10") == 0
     batch = json.loads((review / "work/abstract/batch_0001.json").read_text())
     rows = [{"pmid": p, "decision": "include", "criteria": {"I1": "met", "I2": "met", "E1": "not_met"},
@@ -141,6 +142,13 @@ def _to_fulltext(review, capsys):
     capsys.readouterr()
 
 
+def amend(review, monkeypatch, reason):
+    """Amend the protocol as a person at a terminal does: the confirmation is typed, not piped."""
+    n = len(list((review / "protocol").glob("v*.json"))) + 1
+    monkeypatch.setattr(ledger, "_confirm", lambda prompt: f"amend v{n:03d}")
+    assert run_ledger("amend", review, "--reason", reason) == 0
+
+
 def _set_view(review, view):
     text = (review / "review.yaml").read_text().replace(
         "    inclusion: [Adults with schizophrenia, Whole-brain coordinates reported]",
@@ -148,7 +156,7 @@ def _set_view(review, view):
     (review / "review.yaml").write_text(text)
 
 
-def test_ledger_trimmed_view_is_opt_in_hashed_and_recorded(review, capsys):
+def test_ledger_trimmed_view_is_opt_in_hashed_and_recorded(review, capsys, monkeypatch):
     _to_fulltext(review, capsys)
     full_hash = ledger.Review(review).input_hash("fulltext", "11111111")
 
@@ -161,6 +169,7 @@ def test_ledger_trimmed_view_is_opt_in_hashed_and_recorded(review, capsys):
     # hash changes so a decision made on the other view is not current.
     _set_view(review, "trimmed")
     assert run_ledger("init", review) == 0
+    amend(review, monkeypatch, "full-text judges read the trimmed text")
     rv = ledger.Review(review)
     assert rv.fulltext_view == "trimmed" and rv.input_hash("fulltext", "11111111") != full_hash
     assert rv.input_hash("extraction", "11111111") == full_hash          # extraction still reads it all

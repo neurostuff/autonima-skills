@@ -29,6 +29,20 @@ from pathlib import Path
 UNKNOWN_SPACE = ("mni", "exclude")
 
 
+def only_analyses(studyset_data: dict, ids: list) -> dict:
+    """The studyset holding exactly these analyses, built without Studyset.slice().
+
+    slice() depends on the NiMARE version: 0.16 parses "<pmid>-<analysis>" ids as full
+    "<study>-<analysis>" ids and keeps nothing, and 0.21 keeps every analysis of the named
+    studies (6 ids gave 13 analyses on a real export). Filtering the dict first works on both."""
+    keep = set(ids)
+    data = copy.deepcopy(studyset_data)
+    for study in data.get("studies", []):
+        study["analyses"] = [a for a in study.get("analyses", []) if a["id"] in keep]
+    data["studies"] = [s for s in data.get("studies", []) if s["analyses"]]
+    return data
+
+
 def apply_unknown_space(studyset_data: dict, ids: list, policy: str):
     """Resolve unknown point spaces for one target's analyses, explicitly.
 
@@ -139,8 +153,11 @@ def main(argv=None) -> int:
             summary[target] = info
             (out_dir / "summary.json").write_text(json.dumps(info, indent=1))
             continue
-        studyset = Studyset(target_data).slice(analyses=ids)
-        dataset = studyset.to_dataset()
+        dataset = Studyset(only_analyses(target_data, ids)).to_dataset()
+        if len(dataset.ids) != len(ids):
+            print(f"{target}: the dataset holds {len(dataset.ids)} analyses, {len(ids)} were selected; "
+                  "not fitting", file=sys.stderr)
+            return 1
         workflow = CBMAWorkflow(estimator=estimators[estimator_name](**estimator_args), corrector=corrector(),
                                 diagnostics="focuscounter", output_dir=str(out_dir))
         workflow.fit(dataset)

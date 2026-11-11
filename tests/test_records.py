@@ -90,6 +90,7 @@ def fake_output(batch, lines):
 
 def test_records_stand_in_for_full_text_and_extraction(review, capsys):
     assert run_ledger("init", review) == 0
+    assert run_ledger("register", review) == 0
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "10") == 0
     batch = json.loads((review / "work/abstract/batch_0001.json").read_text())
     fake_output(batch, [{"pmid": p, "decision": d, "criteria": {"I1": s}, "reason": "r"} for p, d, s in
@@ -164,6 +165,7 @@ def test_combined_mode_screens_and_selects_in_one_pass(review, capsys):
         {"key": "a1", "name": "Controls > Patients", "description": "", "table_id": "t1",
          "points": [{"coordinates": [1.0, 2.0, 3.0], "space": "MNI", "values": []}], "document": "- x"}]))
     assert run_ledger("init", review) == 0
+    assert run_ledger("register", review) == 0
     rv = ledger.Review(review)
     assert rv.combined and rv.criteria["fulltext"]["hash"] == rv.criteria["selection"]["hash"]
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "10") == 0
@@ -213,6 +215,7 @@ def test_combined_mode_rejects_an_included_study_missing_pairs(review, capsys):
         "    inclusion: [Whole-brain coordinates reported]\n",
         "    inclusion: [Whole-brain coordinates reported]\n    select_analyses: true\n"))
     assert run_ledger("init", review) == 0
+    assert run_ledger("register", review) == 0
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "10") == 0
     batch = json.loads((review / "work/abstract/batch_0001.json").read_text())
     fake_output(batch, [{"pmid": p, "decision": "include" if p == "11111111" else "exclude",

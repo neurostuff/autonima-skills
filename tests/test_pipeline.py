@@ -210,6 +210,15 @@ def test_spec_rejects_typos(review):
     assert run_ledger("init", review) == 1
 
 
+def test_meta_unknown_space_is_a_spec_key_defaulting_to_mni(review):
+    text = (review / "review.yaml").read_text()
+    assert "unknown_space" not in text                                   # left out: run_meta fits MNI
+    assert run_ledger("init", review) == 0
+    for value, code in (("exclude", 0), ("mni", 0), ("guess", 1)):
+        (review / "review.yaml").write_text(text + f"meta:\n  unknown_space: {value}\n")
+        assert run_ledger("init", review) == code, value
+
+
 def test_target_instructions_are_guidance_that_reaches_the_hash(review):
     # A review without target instructions keeps the hash it had before the key existed.
     before = ledger.Review(review).criteria
@@ -258,6 +267,7 @@ print(len(batch["items"]))
 def test_run_batches_passes_the_prompt_past_list_options(review, tmp_path, capsys):
     import subprocess
     assert run_ledger("init", review) == 0
+    assert run_ledger("register", review) == 0
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "2") == 0
     capsys.readouterr()
     agent = tmp_path / "fake_agent.py"
@@ -281,6 +291,7 @@ def test_full_flow(review, capsys):
     # per-target criteria are shown too, not only the global ones
     assert criteria["selection"]["targets"] == {"patients_gt_controls": {"I1": "Patients greater than controls"}}
     assert last_json(capsys)["targets"] == {"patients_gt_controls": {"I1": "Patients greater than controls"}}
+    assert run_ledger("register", review) == 0
 
     # ---- abstract stage: one good line, one inconsistent line, one missing
     assert run_ledger("batches", review, "--stage", "abstract", "--size", "10") == 0
@@ -385,6 +396,12 @@ def test_full_flow(review, capsys):
     assert [a["id"] for a in studyset["studies"][0]["analyses"]] == ["11111111-tbl2-a1"]
     assert ann["notes"] == [{"analysis_id": "11111111-tbl2-a1", "annotation_id": "cbma_skills",
                              "note": {"patients_gt_controls": False}}]
+    # The results carry the protocol they were made under, and what each version judged.
+    assert report["protocol"] == {"version": 1, "amendments": 0}
+    for doc in (studyset, ann):
+        assert doc["protocol"]["matches_live"] and doc["protocol"]["judgments_without_version"] == 0
+        [v1] = doc["protocol"]["versions"]
+        assert v1["kind"] == "registration" and v1["judgments"] > 0
 
     # ---- status is consistent
     assert run_ledger("status", review) == 0
@@ -503,6 +520,7 @@ def test_extractions_under_a_migrated_skill_hash_stay_done(review, monkeypatch):
     extracted before the skill edit came back pending (all five finished runs read 0
     extracted) and the next runner would have re-extracted all of them."""
     run_ledger("init", review)
+    assert run_ledger("register", review) == 0
     rv = ledger.Review(review)
     legacy = rv.criteria["extraction"]["hash"]
     pmid = next(iter(rv.records))
@@ -532,6 +550,7 @@ def test_an_explicit_extraction_view_reopens_records_made_from_another_view(revi
     workspace back to full must reopen those records; a workspace without an explicit setting keeps
     records of any view."""
     run_ledger("init", review)
+    assert run_ledger("register", review) == 0
     rv = ledger.Review(review)
     pmid = next(iter(rv.records))
     monkeypatch.setattr(ledger.Review, "fulltext_included", lambda self: [pmid])
@@ -576,6 +595,7 @@ def test_a_study_without_parsed_tables_is_recorded_without_a_judge(review, monke
     can never yield an analysis; across eight runs none did, yet each cost a full-paper judge call.
     The ledger records it as extracted with no analyses and batches only studies with tables."""
     run_ledger("init", review)
+    assert run_ledger("register", review) == 0
     rv = ledger.Review(review)
     with_tables, without = sorted(rv.records)[:2]
     monkeypatch.setattr(ledger.Review, "pending", lambda self, stage: [with_tables, without])
@@ -591,3 +611,45 @@ def test_a_study_without_parsed_tables_is_recorded_without_a_judge(review, monke
     rec = json.loads((review / "analyses" / f"{without}.json").read_text())
     assert rec["analyses"] == [] and rec["agent"] == "ledger/no-parsed-tables" and rec["input_hash"] == "in"
     assert rec["criteria_hash"] == rv.criteria["extraction"]["hash"]
+
+
+def test_evidence_quotes_may_come_from_table_captions_and_footers(tmp_path):
+    doc = tmp_path / "doc"
+    (doc / "tables").mkdir(parents=True)
+    (doc / "text.md").write_text("Methods. Participants viewed pictures.")
+    (doc / "tables" / "T1.json").write_text(json.dumps(
+        {"label": "Table 1", "caption": "Whole-brain peaks for Reappraise > Look (MNI).",
+         "footer": "FWE-corrected, p < .05.", "tsv": "Region\tx\ty\tz\nIFG\t-46\t28\t-6"}))
+    text = ledger.evidence_text(doc)
+    hay, pairs = ledger.norm_text(text), ledger._word_pairs(text)
+    for quote in ("Whole-brain peaks for Reappraise > Look (MNI).", "FWE-corrected, p < .05.",
+                  "Participants viewed pictures."):
+        assert ledger.evidence_match(quote, hay, pairs) == "exact", quote
+    assert ledger.evidence_match("Coordinates are listed in a supplementary file we never saw.", hay, pairs) == "none"
+
+
+def test_check_reports_what_this_review_needs(tmp_path, monkeypatch):
+    import importlib
+    import shutil
+    import types
+    (tmp_path / "rv").mkdir()
+    (tmp_path / ledger.LOCK_NAME).write_text(json.dumps({"python": "/elsewhere/bin/python"}))
+    rv = types.SimpleNamespace(root=tmp_path / "rv", spec={
+        "fulltext": {"sources": [{"type": "pmc"}, {"type": "local", "format": "elsevier"}]},
+        "selection": {"targets": [{"name": "t"}]}})
+    real = importlib.import_module
+
+    def fake_import(name, *a, **k):
+        if name.startswith("elsevier_coordinate_extraction"):
+            raise ImportError("not installed")
+        return real(name, *a, **k)
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+    monkeypatch.setattr(shutil, "which", lambda cli: None)
+    report = ledger.cmd_check(rv)
+    got = {c["check"]: c for c in report["checks"]}
+    assert not report["ok"]
+    assert not got["python"]["ok"] and "/elsewhere/bin/python" in got["python"]["detail"]
+    assert not got["elsevier_parser"]["ok"] and not got["judge_cli"]["ok"]
+    assert "nimare" in got                                    # targets exist, so the maps need NiMARE
+    rv.spec = {"fulltext": {"sources": [{"type": "pmc"}]}}
+    assert {c["check"] for c in ledger.cmd_check(rv)["checks"]} == {"python", "judge_cli"}

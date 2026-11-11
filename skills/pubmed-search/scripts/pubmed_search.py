@@ -291,11 +291,13 @@ def load_search_spec(review_dir: Path) -> dict:
 
 
 def run(review_dir: Path, query: Optional[str], pmids: List[str], date_from: Optional[str],
-        date_to: Optional[str], email: Optional[str], client: Optional[Client] = None) -> dict:
+        date_to: Optional[str], email: Optional[str], client: Optional[Client] = None,
+        neurostore_pmids: Optional[List[str]] = None) -> dict:
     client = client or Client(email=email, api_key=os.environ.get("NCBI_API_KEY"))
     log: dict = {
         "query": query, "date_from": date_from, "date_to": date_to,
-        "pmid_list_size": len(pmids), "run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
+        "pmid_list_size": len(pmids),
+        **({"neurostore_pmids": len(neurostore_pmids)} if neurostore_pmids is not None else {}), "run_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
         "eutils": EUTILS,
     }
     source: Dict[str, List[str]] = {}
@@ -311,6 +313,9 @@ def run(review_dir: Path, query: Optional[str], pmids: List[str], date_from: Opt
             )
     for p in pmids:
         source.setdefault(p, []).append("pmid_list")
+    # Candidates a NeuroStore search found (neurostore.py search); PubMed supplies their records.
+    for p in neurostore_pmids or []:
+        source.setdefault(p, []).append("neurostore")
     all_ids = sorted(source, key=int)
     records, missing = fetch_records(client, all_ids)
     for rec in records:
@@ -350,11 +355,20 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     pmids_file = args.pmids_file or (args.review_dir / spec["pmids_file"] if spec.get("pmids_file") else None)
     if pmids_file:
         pmids += read_pmids(Path(pmids_file))
-    if not query and not pmids:
+    neurostore_pmids = None
+    if "neurostore" in spec:
+        # search.query is then the query NeuroStore ran, translated; PubMed only supplies records.
+        query = args.query
+        found = args.review_dir / "search" / "neurostore_pmids.txt"
+        if not found.exists():
+            ap.error("search.neurostore is set: run `neurostore.py search REVIEW` first")
+        neurostore_pmids = read_pmids(found)
+    if not query and not pmids and not neurostore_pmids:
         ap.error("give a query or PMIDs, on the command line or under search: in review.yaml")
     try:
         log = run(args.review_dir, query, pmids, args.date_from or spec.get("date_from"),
-                  args.date_to or spec.get("date_to"), args.email or spec.get("email"))
+                  args.date_to or spec.get("date_to"), args.email or spec.get("email"),
+                  neurostore_pmids=neurostore_pmids)
     except SearchError as exc:
         print(f"SEARCH FAILED: {exc}", file=sys.stderr)
         return 1

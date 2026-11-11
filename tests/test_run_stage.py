@@ -1,6 +1,8 @@
 """run_stage.py: the scripted judge loop, with a fake claude CLI."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -25,6 +27,12 @@ def load(name, path):
 pubmed = load("pubmed_search", SKILLS / "pubmed-search/scripts/pubmed_search.py")
 ledger = load("ledger", SKILLS / "cbma-review/scripts/ledger.py")
 run_stage = load("run_stage", SKILLS / "cbma-review/scripts/run_stage.py")
+
+
+def register(rv):
+    """Register the review's protocol, as the user does before the first judged stage."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert ledger.main(["register", str(rv)]) == 0
 
 FAKE_CLAUDE = r'''
 import json, os, re, sys
@@ -72,6 +80,7 @@ screening:
     recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
     (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
     fake = tmp_path / "fake_claude.py"
     fake.write_text(FAKE_CLAUDE)
     monkeypatch.chdir(ws)
@@ -109,6 +118,7 @@ def test_a_pilot_limit_holds_across_rounds(tmp_path, capsys, monkeypatch):
     recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
     (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
     fake = tmp_path / "fake_claude.py"
     fake.write_text(FAKE_CLAUDE)
     monkeypatch.chdir(ws)
@@ -131,6 +141,7 @@ def workspace(tmp_path):
     recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
     (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
     fake = tmp_path / "fake_claude.py"
     fake.write_text(FAKE_CLAUDE)
     return ws, rv, fake
@@ -259,6 +270,8 @@ def test_a_session_limit_stops_dispatch_and_refunds_the_attempt(tmp_path, capsys
     bookkeeping = importlib.import_module("stage_bookkeeping")
     assert bookkeeping.provider_blocked("ValueError: You've hit your session limit · resets 1:10am")
     assert bookkeeping.provider_blocked("You've hit your weekly limit")
+    # An expired CLI login refused every call of a pilot and used up all 49 studies' attempts.
+    assert bookkeeping.provider_blocked("Failed to authenticate: OAuth session expired and could not be refreshed")
     assert not bookkeeping.provider_blocked("no completed judgments; leave pending")
     ws, rv, fake = workspace(tmp_path)
     monkeypatch.chdir(ws)
@@ -376,3 +389,30 @@ def test_a_batch_judge_cannot_start_a_stage_runner(tmp_path, monkeypatch):
         assert exc.code == 2
     else:
         raise AssertionError("the runner started inside a judge")
+
+
+def test_a_random_pilot_is_a_seeded_sample_not_the_lowest_pmids(tmp_path, capsys, monkeypatch):
+    """--limit alone takes the lowest PMIDs, the oldest papers. --random samples the pending items,
+    and the same seed over the same pending set gives the same sample, so a pilot re-run after an
+    amendment judges the same studies."""
+    ws = tmp_path / "ws"
+    rv = ws / "review"
+    (rv / "search").mkdir(parents=True)
+    (rv / "review.yaml").write_text("objective: t\nsearch: {query: q}\nscreening:\n  abstract: {inclusion: [H]}\n"
+                                    "  fulltext: {inclusion: [W]}\n")
+    recs = pubmed.parse_pubmed_xml((FIX / "pubmed_efetch.xml").read_bytes())
+    (rv / "search" / "records.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    shutil.copytree(ROOT / "agents", ws / ".claude" / "agents")
+    register(rv)
+    fake = tmp_path / "fake_claude.py"
+    fake.write_text(FAKE_CLAUDE)
+    monkeypatch.chdir(ws)
+    pmids = sorted((r["pmid"] for r in recs), key=int)
+    import random
+    expected = sorted(random.Random(5).sample(pmids, 2), key=int)
+    run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "1", "--limit", "2",
+                    "--random", "--seed", "5", "--cli", f"{sys.executable} {fake}"])
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["accepted"] == 2 and summary["total_stage_pending"] == 1
+    judged = sorted((json.loads(line)["pmid"] for line in open(rv / "decisions" / "abstract.jsonl")), key=int)
+    assert judged == expected
