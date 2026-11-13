@@ -82,11 +82,16 @@ Don't ask about each one. The list always states:
 - **the coordinate source:** NeuroStore's analyses on the NeuroStore route;
 - **the text the full-text judges read:** the full text (trimmed is an option, below);
 - **full-text search:** off, with the record count it would give (NeuroStore route);
-- **the estimator and the corrector;**
+- **the estimator and the corrector:** MKDA density with FDR, the package's default.
+  Keep it, whatever is conventional in the field or the modality; offer ALE or
+  KDA only when the user asks for them;
 - **the pilot:** recommended (step 7).
 
 Other choices, such as cue modality, age limits or imaging methods, go in the same list
 when they apply.
+
+After the search, one more question asks for known studies (step 5). It is optional,
+and it is asked on its own.
 
 **Decisions during the review: one per question.** A problem a stage runner raises, a
 change to the protocol, or anything that changes which studies, analyses or maps
@@ -192,9 +197,19 @@ If `REVIEW/review.yaml` exists, run `LEDGER init REVIEW` and continue from
      missing package, a judge CLI that is not logged in (the user runs `claude auth
      login` in a terminal), or imaging terms in a NeuroStore query.
 5. **Search.** Run the search (stage 1 below), and report the count.
-   - **Known studies are optional.** Say, in the same message as the count: "If you know
-     studies that belong in this review, give me their PMIDs and I'll check the search
-     finds them." If the user has none, move on; the pilot (step 7) is the default check.
+   - **Then ask for known studies, as a question of its own.** They are optional, so
+     the question offers a way to skip, but it is never folded into a longer message: a
+     line at the end of the search report is missed when the next line asks to go ahead
+     (the VBM pilot). In Claude Code, ask with AskUserQuestion and nothing else in the
+     call:
+     - question: "Do you know studies that belong in this review? I'll check the search
+       finds them, the pilot will judge them first, and the review page will show where
+       each one ended up.";
+     - options: "No, skip this" and "Yes, I'll paste their PMIDs"; the user can also type
+       the PMIDs under "Other".
+
+     Otherwise ask it as the last line of a message that asks nothing else. If the user
+     has none, move on; the pilot (step 7) is the default check.
    - **If they give some,** run:
 
      ```bash
@@ -208,6 +223,11 @@ If `REVIEW/review.yaml` exists, run `LEDGER init REVIEW` and continue from
      revising is free.
    - **Use studies the user names.** Do not take the full included list of a published
      review they are trying to reproduce: that puts the answer into the search.
+   - **The named studies are used twice more.** A random pilot judges them first (up to
+     half the sample), and the review page lists where each one ended up, with the ones
+     that were excluded or lost on top. The user knows the answer for these, so they
+     are the quickest test of the criteria. If the user names studies later, run
+     `check_known.py` again with the whole list.
 6. **Show the numbered criteria** that `init` prints, and register them
    (Registration, below).
 7. **Recommend a pilot,** and run it unless the user declines. Give the reason: criteria
@@ -220,42 +240,84 @@ A pilot runs every stage on a small sample, then reviews the decisions with the 
 
 1. **Run the stages with `--limit N --random`:** a seeded random sample, not the lowest
    PMIDs, which are the oldest papers. The same seed gives the same sample, so after an
-   amendment the pilot re-judges the same studies.
+   amendment the pilot re-judges the same studies. Studies the user named (step 5) are
+   judged first, up to half the sample.
    - about 40 abstracts (`--limit 40 --random`);
    - retrieval for the ones that pass;
    - about 8 full texts (`--limit 8 --random`);
    - extraction, or the NeuroStore records and `import-analyses`;
    - selection for the included studies.
-2. **Review it with the user, one stage at a time,** abstract first.
-   - Write the stage's sheet:
+2. **Open the review page.** The user reads and judges the decisions there, not in chat.
 
-     ```bash
-     PYTHON SKILLS/cbma-review/scripts/pilot.py sheet REVIEW --stage <abstract|fulltext|selection>
-     ```
+   ```bash
+   PYTHON SKILLS/cbma-review/scripts/review_page.py REVIEW
+   ```
 
-     It lists each decision with its reason, its criteria and, at full text, its quoted
-     evidence. At the abstract stage it shows every include and uncertain, and a sample of
-     the excludes. Without known studies, recall cannot be measured, so check the excludes
-     for studies that belong.
-   - Show the decisions to the user in groups of about five, and ask whether they agree.
-   - Record each verdict as the user gives it:
-
-     ```bash
-     PYTHON SKILLS/cbma-review/scripts/pilot.py record REVIEW --stage <stage> --pmid <pmid> \
-         [--analysis <id> --target <name>] --verdict agree|disagree [--criterion <ID>] [--note "<their words>"]
-     ```
-
-     A verdict never changes a decision.
-3. **Turn the disagreements into edits.** Run `pilot.py summary REVIEW`. It counts
-   agreement per stage and groups the disagreements by criterion. Propose one edit per
-   criterion, in the criterion's own words, and show which pilot decisions it would
-   change.
+   - **Run it in the background.** It serves one page on this machine, opens it in the
+     user's browser, and prints one JSON line. Then tell the user the page is open, and
+     wait: do not ask about decisions in chat meanwhile.
+   - **If `opened_browser` is false,** no browser could be opened from here. Give the
+     user the `open_this` link, or open it in your harness's own browser pane.
+   - **What the user does there.** They read each decision with its evidence: the full
+     abstract, the judge's quotes in their paragraphs, the tables, the analyses each
+     target collects. They mark agree or disagree, name the criterion that was
+     misapplied, and can note what a criterion should say. See "The review page" below.
+   - **A verdict never changes a decision.**
+   - **When the user clicks "Finish review",** the process exits and prints the findings
+     as JSON: agreement per stage and group, and the disagreements and notes by
+     criterion. They are also in `REVIEW/pilot/findings.md`.
+3. **Turn the findings into edits.** Propose one edit per criterion the user disagreed
+   on or noted, in the criterion's own words, starting from their note when they left
+   one. Show which pilot decisions each edit would change.
+   - **Read a paper yourself** only to draft an edit, never to overrule a judge.
+   - **No browser at all** (a remote shell): fall back to `pilot.py sheet`, `record` and
+     `summary`, which do the same in files and chat.
 4. **Amend, or continue.**
    - **The user has edits:** the pilot judged items, so this is an amendment. Give them
      the `amend` command (Registration, below) with the edits in `review.yaml`, then
      re-run the pilot's re-opened decisions and review those again.
    - **No edits:** the full run continues under the same protocol version, and the
      pilot's decisions stand.
+
+## The review page
+
+`review_page.py` is how the user checks the judges, in a pilot and after a complete run.
+It is the same page for both. Its tabs follow the pipeline, and within a tab the
+decisions that matter most come first: the studies the user named, then the close calls,
+then the decisions that are final or that silently drop a study.
+
+- **Studies the user named** (step 5 of Planning) lead every tab, and the Overview says
+  where each one ended up: not found, excluded and on which criterion, without a text,
+  or in which maps.
+- **A close call** is a decision one reading could turn: a study included with a
+  criterion left unclear, or excluded on a single criterion with another left unclear;
+  an analysis selected on an unclear criterion, or left out although none failed.
+- **"Worth a look"** on the Overview of a complete run lists patterns across the run,
+  and only those that fire: studies probably lost for want of a full text, exclusions
+  for "no coordinates" where the file had no coordinate table, one study supplying a
+  large share of a target's analyses, clusters that hold peaks from three or fewer
+  studies. Each opens the studies behind it.
+
+| Tab | What it shows | What the user is checking |
+|---|---|---|
+| Overview | one tile per stage with what it kept and dropped; the studies the user named; in a complete run, the checks that fired; which criterion excluded how many studies; what each target collected and which criteria kept analyses out of it | that the losses are the ones they intended |
+| Abstracts | named studies, uncertain decisions, close calls, then excludes, then includes | studies dropped wrongly: an abstract exclude is final, an include gets a second look |
+| Full texts | named studies, decisions whose quote was not found, close calls, then excludes, then includes, then incomplete texts | exclusions, with the quote each rests on shown in the paper |
+| Analyses | named studies, close calls, included studies from which nothing was selected, then the rest; a table of each analysis × target, with the reason in the row when an analysis is out of every target | studies that silently contribute to no map |
+| Targets | one target at a time: the analyses it selected, by name and study; why the others were left out; the most frequent words in their names; the map's clusters, and the studies behind the ones few studies support | that each map is built from the contrasts they meant |
+| Findings | agreement per group; disagreements and notes by criterion | what to change |
+
+- **Pilot:** the sample is small, so the user can read everything.
+- **Complete run:** each group lists a random sample first (a seeded shuffle), so the
+  share the user agrees with estimates the whole group. They can filter by the
+  criterion that decided, and ask for more of any group.
+- **The page reads the review; it writes only `REVIEW/pilot/`:** the verdicts
+  (`feedback.jsonl`, marked `via: page`), notes on criteria, and `findings.md`.
+- **It stops** when the user finishes, or after three hours without a request. If the
+  judges run a stage while it is open, the user selects Reload.
+- **Do not open the page's link yourself to enter verdicts.** The verdicts are the
+  user's. To record something they told you in chat, use `pilot.py record`, which marks
+  it `via: agent`.
 
 ## Registration
 
@@ -428,12 +490,26 @@ A stage runner does these and reports them. Without one, do them yourself.
   - `points_unverified` should be near 0. Unverified points are dropped at export.
   - Open two extracted studies and compare them with their tables by eye.
 - **Selection:** confirm each target has enough studies for a CBMA (usually at least
-  17 for ALE and 10 as an absolute floor). Say so if a target falls short.
+  17, and 10 as an absolute floor). Say so if a target falls short.
 
 ## Finishing
 
 Report the final `results/prisma.json` counts to the user. Name every stage where
 items remain pending or unavailable, and list the files under `results/`.
+
+**Then offer the review page** (see "The review page"), and say what it is for: checking
+what each map was built from, and auditing a sample of the judges' decisions.
+- **Point the user at the Overview's "Worth a look" list and its three "What decided"
+  blocks, and at Targets.** Few users read every decision; these say where to read. A
+  criterion that excluded far more than they expected, or a target that collected the
+  wrong contrasts, matters more than any single decision.
+- **Report the audit with its denominators:** for each group, how many decisions it
+  has, how many the user reviewed, and how many they agreed with. A sample of 10
+  excludes says little about 400; say so.
+- **A disagreement is not a correction.** If the user wants a decision changed, the way
+  is a criterion edit: an amendment, which re-opens every decision of that stage. Give
+  them that count before they choose. If they choose not to amend, the disagreements
+  stay in the record as the audit's result.
 
 ## Layout of REVIEW (for orientation; the scripts create it)
 
@@ -446,6 +522,7 @@ docs/<pmid>/                normalized text.md, tables/<id>.json, meta.json
 work/<stage>/batch_*.json   batches waiting for judges; judge_responses/ per attempt
 decisions/<stage>.jsonl     accepted decisions (append-only; the ledger writes these)
 analyses/<pmid>.json        accepted, verified coordinate extractions
+pilot/                      the user's review: feedback.jsonl, criterion_notes.jsonl, findings.md
 results/                    prisma.json, criteria.json, nimads/, meta/
 ```
 

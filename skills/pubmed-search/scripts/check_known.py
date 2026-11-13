@@ -22,7 +22,8 @@ Known studies are a handful the user knows from their own reading, five to ten. 
 published review's full list of included studies: the check tunes the query on them, so in a
 benchmark that would put the answer into the search.
 
-Writes REVIEW/search/known_check.json and prints it.
+Writes REVIEW/search/known_check.json and prints it. The pilot judges these studies first, and the
+review page reports where each one ended up, so give the whole list each time.
 """
 
 from __future__ import annotations

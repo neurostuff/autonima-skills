@@ -637,6 +637,18 @@ def _record_tableless(rv: Review, pmid: str, input_view: str) -> bool:
     return True
 
 
+def known_studies(root: Path) -> Dict[str, Optional[dict]]:
+    """The studies the user named as belonging in the review (check_known.py writes them), by
+    PMID: None when the search found the study, or the row that says why it did not."""
+    path = Path(root) / "search" / "known_check.json"
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    out: Dict[str, Optional[dict]] = {str(p): None for p in data.get("found") or []}
+    out.update({str(m["pmid"]): m for m in data.get("missed") or []})
+    return out
+
+
 def cmd_batches(rv: Review, stage: str, size: int, limit: Optional[int], discard: bool) -> List[Path]:
     version = require_protocol(rv)
     input_view = extraction_input_view(rv.root) if stage == "extraction" else "full"

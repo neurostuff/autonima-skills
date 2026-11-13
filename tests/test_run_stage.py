@@ -418,3 +418,18 @@ def test_a_random_pilot_is_a_seeded_sample_not_the_lowest_pmids(tmp_path, capsys
     assert summary["accepted"] == 2 and summary["total_stage_pending"] == 1
     judged = sorted((json.loads(line)["pmid"] for line in open(rv / "decisions" / "abstract.jsonl")), key=int)
     assert judged == expected
+
+
+def test_a_random_pilot_judges_the_studies_the_user_named_first(tmp_path, capsys, monkeypatch):
+    import random
+    ws, rv, fake = workspace(tmp_path)
+    monkeypatch.chdir(ws)
+    pending = sorted(ledger.Review(rv).pending("abstract"), key=int)
+    left_out = [p for p in pending if p not in random.Random(0).sample(pending, 2)][0]
+    (rv / "search" / "known_check.json").write_text(json.dumps({"found": [left_out], "missed": []}))
+    run_stage.main([str(rv), "--stage", "abstract", "--model", "m1", "--size", "1", "--limit", "2", "--random",
+                    "--cli", f"{sys.executable} {fake}"])
+    capsys.readouterr()
+    state = json.loads((rv / "work" / "abstract" / "claude_runner" / "state.json").read_text())
+    scope = list(state["pilots"].values())[0]
+    assert left_out in scope and len(scope) == 2             # half the pilot at most; the rest random
